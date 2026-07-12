@@ -1,63 +1,70 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateBoxDto } from './dto/create-box.dto';
+import { DEFAULT_BOX_CAPACITY } from '../../common/constants/box.constants';
+import { computeBoxStatus } from '../../common/utils/box-status.util';
+import { buildLocationPath } from '../../common/utils/location.util';
 
 @Injectable()
 export class BoxService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(dto: CreateBoxDto) {
-    const existingQr = await this.prisma.movableBox.findUnique({
-      where: { qrCode: dto.qrCode },
-    });
-    if (existingQr) {
-      throw new BadRequestException(`Box with QR code ${dto.qrCode} already exists`);
-    }
+    // Use transaction to ensure slot validation and box creation are atomic
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        if (dto.slotId) {
+          const slot = await tx.slot.findUnique({
+            where: { id: dto.slotId },
+          });
+          if (!slot) throw new NotFoundException(`Slot ${dto.slotId} not found`);
+        }
 
-    const existingLabel = await this.prisma.movableBox.findUnique({
-      where: { label: dto.label },
-    });
-    if (existingLabel) {
-      throw new BadRequestException(`Box with label ${dto.label} already exists`);
-    }
+        // Determine initial status based on slot assignment
+        const capacity = dto.capacity || DEFAULT_BOX_CAPACITY;
+        const initialStatus = computeBoxStatus(dto.slotId, 0, capacity);
 
-    if (dto.slotId) {
-      const slot = await this.prisma.slot.findUnique({
-        where: { id: dto.slotId },
-      });
-      if (!slot) throw new NotFoundException(`Slot ${dto.slotId} not found`);
-    }
-
-    // Determine initial status based on slot assignment
-    const initialStatus = dto.slotId ? 'ACTIVE' : 'INACTIVE';
-
-    const box = await this.prisma.movableBox.create({
-      data: {
-        qrCode: dto.qrCode,
-        label: dto.label,
-        slotId: dto.slotId || null,
-        capacity: 10,
-        occupiedCount: 0,
-        status: initialStatus,
-      },
-      include: {
-        slot: {
+        const box = await tx.movableBox.create({
+          data: {
+            qrCode: dto.qrCode,
+            label: dto.label,
+            slotId: dto.slotId || null,
+            capacity,
+            occupiedCount: 0,
+            status: initialStatus,
+          },
           include: {
-            row: {
+            slot: {
               include: {
-                shelf: {
+                row: {
                   include: {
-                    room: true,
+                    shelf: {
+                      include: {
+                        room: true,
+                      },
+                    },
                   },
                 },
               },
             },
           },
-        },
-      },
-    });
+        });
 
-    return this.formatBox(box);
+        return this.formatBox(box);
+      });
+    } catch (error: any) {
+      // Handle Prisma unique constraint violations
+      if (error.code === 'P2002') {
+        const field = error.meta?.target?.[0];
+        if (field === 'qrCode') {
+          throw new BadRequestException(`Box with QR code "${dto.qrCode}" already exists`);
+        } else if (field === 'label') {
+          throw new BadRequestException(`Box with label "${dto.label}" already exists`);
+        }
+      }
+      // Re-throw other errors (including NotFoundException)
+      throw error;
+    }
   }
 
   async findAll(status?: 'ACTIVE' | 'FULL' | 'INACTIVE', search?: string, page = 1, limit = 10) {
@@ -172,15 +179,10 @@ export class BoxService {
   }
 
   private formatBox(box: any) {
-    let location: string | null = null;
-    if (box.slot) {
-      const slot = box.slot;
-      location = `${slot.row.shelf.room.name} / ${slot.row.shelf.name} / ${slot.row.name} / ${slot.name}`;
-    }
     return {
       ...box,
       vacantCount: box.capacity - box.occupiedCount,
-      location,
+      location: buildLocationPath(box.slot),
     };
   }
 }

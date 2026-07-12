@@ -9,6 +9,9 @@ import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateShelfDto } from './dto/create-shelf.dto';
 import { CreateRowDto } from './dto/create-row.dto';
 import { CreateSlotDto } from './dto/create-slot.dto';
+import { DEFAULT_BOX_CAPACITY } from '../../common/constants/box.constants';
+import { computeBoxStatus } from '../../common/utils/box-status.util';
+import { buildLocationPath } from '../../common/utils/location.util';
 
 @Injectable()
 export class LocationService {
@@ -259,22 +262,15 @@ export class LocationService {
 
     if (!result) throw new NotFoundException(`Slot with QR "${qrCode}" not found`);
 
-    // Narrow nested types through locals to satisfy TS
-    const row = result.row as typeof result.row & {
-      shelf: { id: string; name: string; room: { id: string; name: string } };
-    };
-    const shelf = row.shelf;
-    const room = shelf.room;
-
     return {
       id: result.id,
       name: result.name,
       qrCode: result.qrCode,
       position: result.position,
-      location: `${room.name} / ${shelf.name} / ${row.name} / ${result.name}`,
-      row: { id: row.id, name: row.name },
-      shelf: { id: shelf.id, name: shelf.name },
-      room: { id: room.id, name: room.name },
+      location: buildLocationPath(result),
+      row: { id: result.row.id, name: result.row.name },
+      shelf: { id: result.row.shelf.id, name: result.row.shelf.name },
+      room: { id: result.row.shelf.room.id, name: result.row.shelf.room.name },
       boxes: result.boxes,
     };
   }
@@ -310,13 +306,11 @@ export class LocationService {
     if (!newSlot) throw new NotFoundException(`Slot ${newSlotId} not found`);
 
     // Build human-readable location strings for the audit log
-    const fromLocation = box.slot
-      ? `${box.slot.row.shelf.room.name} / ${box.slot.row.shelf.name} / ${box.slot.row.name} / ${box.slot.name}`
-      : null;
-    const toLocation = `${newSlot.row.shelf.room.name} / ${newSlot.row.shelf.name} / ${newSlot.row.name} / ${newSlot.name}`;
+    const fromLocation = buildLocationPath(box.slot);
+    const toLocation = buildLocationPath(newSlot);
 
-    // Determine new status: if box was INACTIVE (no slot), make it ACTIVE when assigned
-    const newStatus = !box.slotId ? 'ACTIVE' : (box.occupiedCount >= box.capacity ? 'FULL' : 'ACTIVE');
+    // Compute new status using centralized logic
+    const newStatus = computeBoxStatus(newSlotId, box.occupiedCount, box.capacity);
 
     // 3. Execute all writes in one transaction — rollback everything on failure
     const updatedBox = await this.prisma.$transaction(async (tx) => {
@@ -422,10 +416,8 @@ export class LocationService {
           // Override is true: we update the box location to the scanned slot
           targetSlotId = scannedSlot.id;
           boxMovedLocationChange = {
-            from: box.slot
-              ? `${box.slot.row.shelf.room.name} / ${box.slot.row.shelf.name} / ${box.slot.row.name} / ${box.slot.name}`
-              : null,
-            to: `${scannedSlot.row.shelf.room.name} / ${scannedSlot.row.shelf.name} / ${scannedSlot.row.name} / ${scannedSlot.name}`,
+            from: buildLocationPath(box.slot),
+            to: buildLocationPath(scannedSlot),
           };
         }
       }
@@ -438,9 +430,7 @@ export class LocationService {
         })
       : null;
 
-    const toLocation = targetSlot
-      ? `${targetSlot.row.shelf.room.name} / ${targetSlot.row.shelf.name} / ${targetSlot.row.name} / ${targetSlot.name}`
-      : 'Unplaced';
+    const toLocation = buildLocationPath(targetSlot);
 
     // 5. Transaction-wrapped write operation
     return this.prisma.$transaction(async (tx) => {
@@ -464,10 +454,8 @@ export class LocationService {
 
       // Update box occupancy and status
       const newOccupiedCount = box.occupiedCount + needed;
-      // Compute status: INACTIVE if no slot, FULL if at capacity, otherwise ACTIVE
-      const newStatus = !targetSlotId 
-        ? 'INACTIVE' 
-        : (newOccupiedCount >= box.capacity ? 'FULL' : 'ACTIVE');
+      // Compute status using centralized logic
+      const newStatus = computeBoxStatus(targetSlotId, newOccupiedCount, box.capacity);
         
       await tx.movableBox.update({
         where: { id: boxId },
@@ -571,9 +559,7 @@ export class LocationService {
       throw new BadRequestException(`Passport ${passportId} is already issued`);
     }
 
-    const fromLocation = passport.box?.slot
-      ? `${passport.box.slot.row.shelf.room.name} / ${passport.box.slot.row.shelf.name} / ${passport.box.slot.row.name} / ${passport.box.slot.name}`
-      : 'Unplaced box';
+    const fromLocation = buildLocationPath(passport.box?.slot);
 
     return this.prisma.$transaction(async (tx) => {
       const updatedPassport = await tx.passport.update({
@@ -589,10 +575,12 @@ export class LocationService {
         const box = await tx.movableBox.findUnique({ where: { id: passport.boxId } });
         const newOccupiedCount = (box?.occupiedCount || 1) - 1;
         
-        // Compute status: INACTIVE if no slot, FULL if at capacity, otherwise ACTIVE
-        const newStatus = !box?.slotId 
-          ? 'INACTIVE' 
-          : (newOccupiedCount >= (box?.capacity || 10) ? 'FULL' : 'ACTIVE');
+        // Compute status using centralized logic
+        const newStatus = computeBoxStatus(
+          box?.slotId, 
+          newOccupiedCount, 
+          box?.capacity || DEFAULT_BOX_CAPACITY
+        );
         
         await tx.movableBox.update({
           where: { id: passport.boxId },
@@ -686,7 +674,7 @@ export class LocationService {
         const box = boxes[i];
         const slot = availableSlots[i];
 
-        const location = `${slot.row.shelf.room.name} / ${slot.row.shelf.name} / ${slot.row.name} / ${slot.name}`;
+        const location = buildLocationPath(slot);
 
         // Update box: assign to slot and set ACTIVE
         await tx.movableBox.update({

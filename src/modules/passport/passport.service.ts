@@ -7,21 +7,27 @@ export class PassportService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(dto: CreatePassportDto) {
-    const existing = await this.prisma.passport.findUnique({
-      where: { qrCode: dto.qrCode },
-    });
-    if (existing) {
-      throw new BadRequestException(`Passport with QR code ${dto.qrCode} already exists`);
+    try {
+      return await this.prisma.passport.create({
+        data: {
+          qrCode: dto.qrCode,
+          holderName: dto.holderName,
+          holderIdNo: dto.holderIdNo,
+          status: 'ISSUED', // starts as issued (not in box) by default
+        },
+      });
+    } catch (error: any) {
+      // Handle Prisma unique constraint violations
+      if (error.code === 'P2002') {
+        const field = error.meta?.target?.[0];
+        if (field === 'qrCode') {
+          throw new BadRequestException(`Passport with QR code "${dto.qrCode}" already exists`);
+        } else if (field === 'holderIdNo') {
+          throw new BadRequestException(`Passport with ID number "${dto.holderIdNo}" already exists`);
+        }
+      }
+      throw error;
     }
-
-    return this.prisma.passport.create({
-      data: {
-        qrCode: dto.qrCode,
-        holderName: dto.holderName,
-        holderIdNo: dto.holderIdNo,
-        status: 'ISSUED', // starts as issued (not in box) by default
-      },
-    });
   }
 
   async findAll(status?: 'IN_BOX' | 'ISSUED', search?: string, page = 1, limit = 10) {
