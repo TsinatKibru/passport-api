@@ -11,6 +11,8 @@ import {
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { LocationService } from './location.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateShelfDto } from './dto/create-shelf.dto';
@@ -155,5 +157,18 @@ export class LocationController {
       limit ? parseInt(limit, 10) : 20,
     );
   }
-}
 
+  // ─────────────────────────────────────────────────────────────
+  // BULK OPERATIONS
+  // ─────────────────────────────────────────────────────────────
+
+  /** POST /api/location/bulk-assign-boxes — bulk assign multiple boxes to available slots */
+  @Post('bulk-assign-boxes')
+  @Roles('ADMIN', 'STAFF')
+  bulkAssignBoxesToSlots(
+    @Body() dto: { boxIds: string[]; roomId?: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.locationService.bulkAssignBoxesToSlots(dto.boxIds, user.sub, dto.roomId);
+  }
+}

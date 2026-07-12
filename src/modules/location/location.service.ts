@@ -619,8 +619,111 @@ export class LocationService {
   }
 
   /**
-   * Query for available boxes with at least neededSpaces vacancy.
+   * Bulk assign multiple boxes to available slots automatically.
+   * Finds the first N available slots and assigns boxes sequentially.
    */
+  async bulkAssignBoxesToSlots(boxIds: string[], userId: string, roomId?: string) {
+    // 1. Validate all boxes exist and are INACTIVE
+    const boxes = await this.prisma.movableBox.findMany({
+      where: { id: { in: boxIds } },
+    });
+
+    if (boxes.length !== boxIds.length) {
+      throw new NotFoundException('One or more boxes not found');
+    }
+
+    const nonInactiveBoxes = boxes.filter(b => b.status !== 'INACTIVE');
+    if (nonInactiveBoxes.length > 0) {
+      const labels = nonInactiveBoxes.map(b => b.label).join(', ');
+      throw new BadRequestException(
+        `These boxes are already assigned to slots: ${labels}. Only INACTIVE boxes can be bulk assigned.`,
+      );
+    }
+
+    // 2. Find available slots (no boxes assigned)
+    const availableSlots = await this.prisma.slot.findMany({
+      where: {
+        boxes: { none: {} }, // Slots with no boxes
+        ...(roomId && {
+          row: {
+            shelf: {
+              roomId: roomId,
+            },
+          },
+        }),
+      },
+      include: {
+        row: {
+          include: {
+            shelf: {
+              include: {
+                room: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: [
+        { row: { shelf: { room: { name: 'asc' } } } },
+        { row: { shelf: { position: 'asc' } } },
+        { row: { position: 'asc' } },
+        { position: 'asc' },
+      ],
+      take: boxIds.length,
+    });
+
+    if (availableSlots.length < boxIds.length) {
+      throw new BadRequestException(
+        `Not enough available slots. Need ${boxIds.length} slots, but only ${availableSlots.length} available${roomId ? ' in selected room' : ''}.`,
+      );
+    }
+
+    // 3. Perform bulk assignment in transaction
+    return this.prisma.$transaction(async (tx) => {
+      const assignments = [];
+
+      for (let i = 0; i < boxes.length; i++) {
+        const box = boxes[i];
+        const slot = availableSlots[i];
+
+        const location = `${slot.row.shelf.room.name} / ${slot.row.shelf.name} / ${slot.row.name} / ${slot.name}`;
+
+        // Update box: assign to slot and set ACTIVE
+        await tx.movableBox.update({
+          where: { id: box.id },
+          data: {
+            slotId: slot.id,
+            status: 'ACTIVE', // Auto-activate when assigned
+          },
+        });
+
+        // Create movement log
+        await tx.movementLog.create({
+          data: {
+            action: 'BOX_MOVED',
+            fromLocation: null, // Was unassigned
+            toLocation: location,
+            boxId: box.id,
+            userId,
+          },
+        });
+
+        assignments.push({
+          boxId: box.id,
+          boxLabel: box.label,
+          slotId: slot.id,
+          location,
+        });
+      }
+
+      return {
+        success: true,
+        count: assignments.length,
+        assignments,
+      };
+    });
+  }
+
   async getAvailableBoxes(neededSpaces: number) {
     const boxes = await this.prisma.movableBox.findMany({
       where: {
