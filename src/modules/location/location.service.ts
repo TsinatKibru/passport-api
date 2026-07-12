@@ -712,18 +712,62 @@ export class LocationService {
     });
   }
 
-  async getAvailableBoxes(neededSpaces: number) {
+  /**
+   * Get available boxes with pagination, search, and filters.
+   * 
+   * CRITICAL: Used by box assignment modal. With 10,000+ boxes, pagination is required.
+   * 
+   * @param neededSpaces - Minimum vacant slots required
+   * @param page - Page number (1-indexed)
+   * @param limit - Items per page (default: 20)
+   * @param search - Search by label or QR code
+   * @param roomId - Filter by room
+   * @returns Paginated list of available boxes
+   */
+  async getAvailableBoxes(
+    neededSpaces: number,
+    page: number = 1,
+    limit: number = 20,
+    search?: string,
+    roomId?: string,
+  ) {
+    // Build where clause for efficient DB filtering
+    const where: any = {
+      status: { in: ['ACTIVE'] },
+    };
+
+    // Filter by room if specified
+    if (roomId) {
+      where.slot = {
+        row: {
+          shelf: {
+            roomId,
+          },
+        },
+      };
+    }
+
+    // Search by label or QR code if specified
+    if (search) {
+      where.OR = [
+        { label: { contains: search, mode: 'insensitive' as const } },
+        { qrCode: { contains: search, mode: 'insensitive' as const } },
+      ];
+    }
+
+    // Fetch all matching boxes (we need to filter by vacantCount in-memory)
+    // Note: Can't filter by vacantCount in DB since it's computed
     const boxes = await this.prisma.movableBox.findMany({
-      where: {
-        status: { in: ['ACTIVE'] },
-      },
+      where,
       include: {
         slot: { include: { row: { include: { shelf: { include: { room: true } } } } } },
       },
+      // Order by occupiedCount ascending (approximates most vacant first)
+      orderBy: { occupiedCount: 'asc' },
     });
 
-    // Filter and compute values dynamically
-    return boxes
+    // Compute vacant count and filter by needed spaces
+    const availableBoxes = boxes
       .map((box) => ({
         id: box.id,
         qrCode: box.qrCode,
@@ -732,11 +776,24 @@ export class LocationService {
         occupiedCount: box.occupiedCount,
         vacantCount: box.capacity - box.occupiedCount,
         status: box.status,
-        location: box.slot
-          ? `${box.slot.row.shelf.room.name} / ${box.slot.row.shelf.name} / ${box.slot.row.name} / ${box.slot.name}`
-          : 'Unplaced',
+        location: buildLocationPath(box.slot),
       }))
       .filter((box) => box.vacantCount >= neededSpaces)
       .sort((a, b) => b.vacantCount - a.vacantCount); // Sort by most vacant slots first
+
+    // Apply pagination to filtered results
+    const total = availableBoxes.length;
+    const totalPages = Math.ceil(total / limit);
+    const skip = (page - 1) * limit;
+    const paginatedData = availableBoxes.slice(skip, skip + limit);
+
+    return {
+      data: paginatedData,
+      total,
+      page,
+      limit,
+      totalPages,
+      hasMore: page < totalPages,
+    };
   }
 }

@@ -48,10 +48,31 @@ export class BoxController {
     );
   }
 
+  /**
+   * GET /api/boxes/available
+   * 
+   * Get available boxes with pagination and filters.
+   * CRITICAL: Used by passport assignment modal with 10K+ boxes.
+   * 
+   * Query params:
+   * - neededSpaces: Minimum vacant slots required
+   * - page: Page number (default: 1)
+   * - limit: Items per page (default: 20)
+   * - search: Search by label or QR code
+   * - roomId: Filter by room
+   */
   @Get('available')
-  getAvailable(@Query('neededSpaces') neededSpaces?: string) {
+  getAvailable(
+    @Query('neededSpaces') neededSpaces?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('roomId') roomId?: string,
+  ) {
     const spaces = neededSpaces ? parseInt(neededSpaces, 10) : 1;
-    return this.locationService.getAvailableBoxes(spaces);
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 20;
+    return this.locationService.getAvailableBoxes(spaces, pageNum, limitNum, search, roomId);
   }
 
   @Get('qr/:qrCode')
