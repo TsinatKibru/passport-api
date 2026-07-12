@@ -28,8 +28,16 @@ export class LocationService {
   async createRoom(dto: CreateRoomDto) {
     try {
       return await this.prisma.room.create({ data: dto });
-    } catch {
-      throw new ConflictException(`QR code "${dto.qrCode}" is already in use`);
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const field = error.meta?.target?.[0];
+        if (field === 'qrCode') {
+          throw new ConflictException(`QR code "${dto.qrCode}" is already in use by another room`);
+        } else if (field === 'name') {
+          throw new ConflictException(`Room name "${dto.name}" already exists. Please choose a different name.`);
+        }
+      }
+      throw new BadRequestException('Failed to create room');
     }
   }
 
@@ -59,8 +67,16 @@ export class LocationService {
     if (!room) throw new NotFoundException(`Room ${dto.roomId} not found`);
     try {
       return await this.prisma.shelf.create({ data: dto });
-    } catch {
-      throw new ConflictException(`QR code "${dto.qrCode}" is already in use`);
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const target = error.meta?.target;
+        if (target?.includes('qrCode')) {
+          throw new ConflictException(`QR code "${dto.qrCode}" is already in use by another shelf`);
+        } else if (target?.includes('roomId') && target?.includes('name')) {
+          throw new ConflictException(`A shelf named "${dto.name}" already exists in room "${room.name}". Please choose a different name.`);
+        }
+      }
+      throw new BadRequestException('Failed to create shelf');
     }
   }
 
@@ -86,12 +102,20 @@ export class LocationService {
   }
 
   async createRow(dto: CreateRowDto) {
-    const shelf = await this.prisma.shelf.findUnique({ where: { id: dto.shelfId } });
+    const shelf = await this.prisma.shelf.findUnique({ where: { id: dto.shelfId }, include: { room: true } });
     if (!shelf) throw new NotFoundException(`Shelf ${dto.shelfId} not found`);
     try {
       return await this.prisma.row.create({ data: dto });
-    } catch {
-      throw new ConflictException(`QR code "${dto.qrCode}" is already in use`);
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const target = error.meta?.target;
+        if (target?.includes('qrCode')) {
+          throw new ConflictException(`QR code "${dto.qrCode}" is already in use by another row`);
+        } else if (target?.includes('shelfId') && target?.includes('name')) {
+          throw new ConflictException(`A row named "${dto.name}" already exists in shelf "${shelf.name}". Please choose a different name.`);
+        }
+      }
+      throw new BadRequestException('Failed to create row');
     }
   }
 
@@ -177,12 +201,23 @@ export class LocationService {
   }
 
   async createSlot(dto: CreateSlotDto) {
-    const row = await this.prisma.row.findUnique({ where: { id: dto.rowId } });
+    const row = await this.prisma.row.findUnique({ 
+      where: { id: dto.rowId },
+      include: { shelf: { include: { room: true } } }
+    });
     if (!row) throw new NotFoundException(`Row ${dto.rowId} not found`);
     try {
       return await this.prisma.slot.create({ data: dto });
-    } catch {
-      throw new ConflictException(`QR code "${dto.qrCode}" is already in use`);
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const target = error.meta?.target;
+        if (target?.includes('qrCode')) {
+          throw new ConflictException(`QR code "${dto.qrCode}" is already in use by another slot`);
+        } else if (target?.includes('rowId') && target?.includes('name')) {
+          throw new ConflictException(`A slot named "${dto.name}" already exists in row "${row.name}". Please choose a different name.`);
+        }
+      }
+      throw new BadRequestException('Failed to create slot');
     }
   }
 
@@ -265,9 +300,6 @@ export class LocationService {
     });
 
     if (!box) throw new NotFoundException(`Box ${boxId} not found`);
-    if (box.status === 'INACTIVE') {
-      throw new BadRequestException(`Box ${boxId} is inactive and cannot be moved`);
-    }
 
     // 2. Load the destination slot with its full location path
     const newSlot = await this.prisma.slot.findUnique({
@@ -283,12 +315,18 @@ export class LocationService {
       : null;
     const toLocation = `${newSlot.row.shelf.room.name} / ${newSlot.row.shelf.name} / ${newSlot.row.name} / ${newSlot.name}`;
 
+    // Determine new status: if box was INACTIVE (no slot), make it ACTIVE when assigned
+    const newStatus = !box.slotId ? 'ACTIVE' : (box.occupiedCount >= box.capacity ? 'FULL' : 'ACTIVE');
+
     // 3. Execute all writes in one transaction — rollback everything on failure
     const updatedBox = await this.prisma.$transaction(async (tx) => {
-      // Update box location
+      // Update box location and status
       const movedBox = await tx.movableBox.update({
         where: { id: boxId },
-        data: { slotId: newSlotId },
+        data: { 
+          slotId: newSlotId,
+          status: newStatus,
+        },
         include: {
           slot: { include: { row: { include: { shelf: { include: { room: true } } } } } },
         },
@@ -424,13 +462,18 @@ export class LocationService {
         });
       }
 
-      // Update box occupancy
+      // Update box occupancy and status
       const newOccupiedCount = box.occupiedCount + needed;
+      // Compute status: INACTIVE if no slot, FULL if at capacity, otherwise ACTIVE
+      const newStatus = !targetSlotId 
+        ? 'INACTIVE' 
+        : (newOccupiedCount >= box.capacity ? 'FULL' : 'ACTIVE');
+        
       await tx.movableBox.update({
         where: { id: boxId },
         data: {
           occupiedCount: newOccupiedCount,
-          status: newOccupiedCount >= box.capacity ? 'FULL' : 'ACTIVE',
+          status: newStatus,
         },
       });
 
@@ -543,12 +586,19 @@ export class LocationService {
       });
 
       if (passport.boxId) {
+        const box = await tx.movableBox.findUnique({ where: { id: passport.boxId } });
+        const newOccupiedCount = (box?.occupiedCount || 1) - 1;
+        
+        // Compute status: INACTIVE if no slot, FULL if at capacity, otherwise ACTIVE
+        const newStatus = !box?.slotId 
+          ? 'INACTIVE' 
+          : (newOccupiedCount >= (box?.capacity || 10) ? 'FULL' : 'ACTIVE');
+        
         await tx.movableBox.update({
           where: { id: passport.boxId },
           data: {
             occupiedCount: { decrement: 1 },
-            // Reactivate box if it was FULL
-            status: 'ACTIVE',
+            status: newStatus,
           },
         });
       }

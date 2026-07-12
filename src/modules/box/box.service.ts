@@ -28,6 +28,9 @@ export class BoxService {
       if (!slot) throw new NotFoundException(`Slot ${dto.slotId} not found`);
     }
 
+    // Determine initial status based on slot assignment
+    const initialStatus = dto.slotId ? 'ACTIVE' : 'INACTIVE';
+
     const box = await this.prisma.movableBox.create({
       data: {
         qrCode: dto.qrCode,
@@ -35,7 +38,7 @@ export class BoxService {
         slotId: dto.slotId || null,
         capacity: 10,
         occupiedCount: 0,
-        status: 'ACTIVE',
+        status: initialStatus,
       },
       include: {
         slot: {
