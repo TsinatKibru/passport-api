@@ -54,4 +54,33 @@ export class AuthService {
     });
     return user;
   }
+
+  async getUsers() {
+    return this.prisma.user.findMany({
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async updateRole(userId: string, role: 'ADMIN' | 'STAFF') {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { role },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+      },
+    });
+  }
 }

@@ -105,21 +105,75 @@ export class LocationService {
   // SLOTS
   // ─────────────────────────────────────────────────────────────
 
-  async getSlots(rowId?: string) {
-    return this.prisma.slot.findMany({
-      where: rowId ? { rowId } : undefined,
-      orderBy: { position: 'asc' },
-      include: {
-        row: {
-          select: {
-            id: true,
-            name: true,
-            shelf: { select: { id: true, name: true, room: { select: { id: true, name: true } } } },
+  async getSlots(rowId?: string, page?: number, limit?: number, search?: string) {
+    // If rowId is provided, use hierarchical loading (no pagination)
+    if (rowId) {
+      return this.prisma.slot.findMany({
+        where: { rowId },
+        orderBy: { position: 'asc' },
+        include: {
+          row: {
+            select: {
+              id: true,
+              name: true,
+              shelf: { select: { id: true, name: true, room: { select: { id: true, name: true } } } },
+            },
           },
+          boxes: { select: { id: true, qrCode: true, label: true, occupiedCount: true, capacity: true, status: true } },
         },
-        boxes: { select: { id: true, qrCode: true, label: true, occupiedCount: true, capacity: true, status: true } },
-      },
-    });
+      });
+    }
+
+    // Paginated response for slot picker
+    const pageNum = page || 1;
+    const limitNum = limit || 15;
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build search filter
+    const searchFilter = search
+      ? {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' as const } },
+            { qrCode: { contains: search, mode: 'insensitive' as const } },
+            { row: { name: { contains: search, mode: 'insensitive' as const } } },
+            { row: { shelf: { name: { contains: search, mode: 'insensitive' as const } } } },
+            { row: { shelf: { room: { name: { contains: search, mode: 'insensitive' as const } } } } },
+          ],
+        }
+      : {};
+
+    const [data, total] = await Promise.all([
+      this.prisma.slot.findMany({
+        where: searchFilter,
+        orderBy: [
+          { row: { shelf: { room: { name: 'asc' } } } },
+          { row: { shelf: { name: 'asc' } } },
+          { row: { name: 'asc' } },
+          { position: 'asc' },
+        ],
+        skip,
+        take: limitNum,
+        include: {
+          row: {
+            select: {
+              id: true,
+              name: true,
+              shelf: { select: { id: true, name: true, room: { select: { id: true, name: true } } } },
+            },
+          },
+          boxes: { select: { id: true, qrCode: true, label: true, occupiedCount: true, capacity: true, status: true } },
+        },
+      }),
+      this.prisma.slot.count({ where: searchFilter }),
+    ]);
+
+    return {
+      data,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum),
+    };
   }
 
   async createSlot(dto: CreateSlotDto) {

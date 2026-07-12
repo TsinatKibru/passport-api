@@ -101,11 +101,21 @@ export class LocationController {
   // SLOTS
   // ─────────────────────────────────────────────────────────────
 
-  /** GET /api/location/slots?rowId= — list slots, optionally filtered by row */
+  /** GET /api/location/slots?rowId=&page=&limit=&search= — list slots with pagination and search */
   @Get('slots')
   @Roles('ADMIN', 'STAFF')
-  getSlots(@Query('rowId') rowId?: string) {
-    return this.locationService.getSlots(rowId);
+  getSlots(
+    @Query('rowId') rowId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.locationService.getSlots(
+      rowId,
+      page ? parseInt(page, 10) : undefined,
+      limit ? parseInt(limit, 10) : undefined,
+      search,
+    );
   }
 
   /** GET /api/location/slots/qr/:qrCode — look up a slot by QR code (mobile scan) */
