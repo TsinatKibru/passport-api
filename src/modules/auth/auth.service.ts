@@ -3,6 +3,8 @@ import {
   UnauthorizedException,
   ConflictException,
   ForbiddenException,
+  NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
@@ -10,6 +12,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { SetupAdminDto } from './dto/setup-admin.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { JwtPayload } from '../../common/decorators/current-user.decorator';
 
 @Injectable()
@@ -69,12 +73,247 @@ export class AuthService {
         isActive: true,
         createdAt: true,
         updatedAt: true,
+        _count: {
+          select: {
+            movementLogs: true,
+          },
+        },
       },
       orderBy: { name: 'asc' },
     });
   }
 
-  async updateRole(userId: string, role: 'ADMIN' | 'STAFF') {
+  /**
+   * Get user statistics for dashboard
+   */
+  async getUserStats() {
+    const [totalUsers, activeUsers, adminCount, staffCount] = await Promise.all([
+      this.prisma.user.count(),
+      this.prisma.user.count({ where: { isActive: true } }),
+      this.prisma.user.count({ where: { role: 'ADMIN' } }),
+      this.prisma.user.count({ where: { role: 'STAFF' } }),
+    ]);
+
+    return {
+      totalUsers,
+      activeUsers,
+      inactiveUsers: totalUsers - activeUsers,
+      adminCount,
+      staffCount,
+    };
+  }
+
+  /**
+   * Create a new user (Admin only)
+   */
+  async createUser(dto: CreateUserDto) {
+    // Check if email already exists
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+    });
+
+    if (existingUser) {
+      throw new ConflictException('Email already in use');
+    }
+
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(dto.password, salt);
+
+    // Create user
+    const user = await this.prisma.user.create({
+      data: {
+        email: dto.email,
+        name: dto.name,
+        passwordHash,
+        role: dto.role,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      message: 'User created successfully',
+      user,
+    };
+  }
+
+  /**
+   * Update user details (Admin only)
+   */
+  async updateUser(userId: string, dto: UpdateUserDto) {
+    // Check if user exists
+    const existingUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!existingUser) {
+      throw new NotFoundException('User not found');
+    }
+
+    // If email is being changed, check for conflicts
+    if (dto.email && dto.email !== existingUser.email) {
+      const emailInUse = await this.prisma.user.findUnique({
+        where: { email: dto.email },
+      });
+
+      if (emailInUse) {
+        throw new ConflictException('Email already in use');
+      }
+    }
+
+    // Update user
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: dto,
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      message: 'User updated successfully',
+      user,
+    };
+  }
+
+  /**
+   * Toggle user active status (Admin only)
+   */
+  async toggleUserStatus(userId: string, currentUserId: string) {
+    // Prevent users from deactivating themselves
+    if (userId === currentUserId) {
+      throw new BadRequestException('Cannot deactivate your own account');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // Check if this is the last active admin
+    if (user.role === 'ADMIN' && user.isActive) {
+      const activeAdminCount = await this.prisma.user.count({
+        where: { role: 'ADMIN', isActive: true },
+      });
+
+      if (activeAdminCount <= 1) {
+        throw new BadRequestException('Cannot deactivate the last active admin');
+      }
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: { isActive: !user.isActive },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      message: `User ${updatedUser.isActive ? 'activated' : 'deactivated'} successfully`,
+      user: updatedUser,
+    };
+  }
+
+  /**
+   * Delete a user (Admin only)
+   * Prevents deletion of last admin or self
+   */
+  async deleteUser(userId: string, currentUserId: string) {
+    // Prevent users from deleting themselves
+    if (userId === currentUserId) {
+      throw new BadRequestException('Cannot delete your own account');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // Check if this is the last admin
+    if (user.role === 'ADMIN') {
+      const adminCount = await this.prisma.user.count({
+        where: { role: 'ADMIN' },
+      });
+
+      if (adminCount <= 1) {
+        throw new BadRequestException('Cannot delete the last admin account');
+      }
+    }
+
+    // Check if user has movement logs
+    const movementLogCount = await this.prisma.movementLog.count({
+      where: { userId },
+    });
+
+    if (movementLogCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete user with ${movementLogCount} movement log entries. Consider deactivating instead.`,
+      );
+    }
+
+    // Delete user
+    await this.prisma.user.delete({
+      where: { id: userId },
+    });
+
+    return {
+      message: 'User deleted successfully',
+    };
+  }
+
+  async updateRole(userId: string, role: 'ADMIN' | 'STAFF', currentUserId: string) {
+    // Prevent users from changing their own role
+    if (userId === currentUserId) {
+      throw new BadRequestException('Cannot modify your own role');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // If downgrading from ADMIN to STAFF, check if this is the last admin
+    if (user.role === 'ADMIN' && role === 'STAFF') {
+      const adminCount = await this.prisma.user.count({
+        where: { role: 'ADMIN' },
+      });
+
+      if (adminCount <= 1) {
+        throw new BadRequestException('Cannot change role of the last admin');
+      }
+    }
+
     return this.prisma.user.update({
       where: { id: userId },
       data: { role },
