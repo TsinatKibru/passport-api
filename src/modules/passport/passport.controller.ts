@@ -34,7 +34,7 @@ export class PassportController {
   }
 
   @Get()
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'STAFF')
   findAll(
     @Query('status') status?: 'IN_BOX' | 'ISSUED',
     @Query('search') search?: string,
@@ -55,7 +55,7 @@ export class PassportController {
   }
 
   @Get(':id')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'STAFF')
   findOne(@Param('id') id: string) {
     return this.passportService.findOne(id);
   }

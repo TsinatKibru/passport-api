@@ -33,7 +33,7 @@ export class BoxController {
   }
 
   @Get()
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'STAFF')
   findAll(
     @Query('status') status?: 'ACTIVE' | 'FULL' | 'INACTIVE',
     @Query('search') search?: string,
@@ -81,7 +81,7 @@ export class BoxController {
   }
 
   @Get(':id')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'STAFF')
   findOne(@Param('id') id: string) {
     return this.boxService.findOne(id);
   }
