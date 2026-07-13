@@ -4,6 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { LocationValidationService } from '../../common/services/location-validation.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateShelfDto } from './dto/create-shelf.dto';
@@ -13,9 +15,20 @@ import { DEFAULT_BOX_CAPACITY } from '../../common/constants/box.constants';
 import { computeBoxStatus } from '../../common/utils/box-status.util';
 import { buildLocationPath } from '../../common/utils/location.util';
 
+type SlotWithPath = Prisma.SlotGetPayload<{
+  include: { row: { include: { shelf: { include: { room: true } } } } };
+}>;
+
+type BoxWithSlot = Prisma.MovableBoxGetPayload<{
+  include: { slot: { include: { row: { include: { shelf: { include: { room: true } } } } } } };
+}>;
+
 @Injectable()
 export class LocationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly locationValidation: LocationValidationService,
+  ) {}
 
   // ─────────────────────────────────────────────────────────────
   // ROOMS
@@ -305,6 +318,25 @@ export class LocationService {
 
     if (!newSlot) throw new NotFoundException(`Slot ${newSlotId} not found`);
 
+    // 3. Check if destination slot is already occupied (prevent conflicts)
+    if (box.slotId !== newSlotId) {
+      const existingBox = await this.prisma.movableBox.findFirst({
+        where: { 
+          slotId: newSlotId,
+          id: { not: boxId } // Exclude the box being moved
+        },
+        select: { id: true, label: true }
+      });
+
+      if (existingBox) {
+        const slotLocation = buildLocationPath(newSlot);
+        throw new ConflictException(
+          `Slot is already occupied by box ${existingBox.label} at ${slotLocation}. ` +
+          `Please choose a different slot or move ${existingBox.label} first.`
+        );
+      }
+    }
+
     // Build human-readable location strings for the audit log
     const fromLocation = buildLocationPath(box.slot);
     const toLocation = buildLocationPath(newSlot);
@@ -312,190 +344,151 @@ export class LocationService {
     // Compute new status using centralized logic
     const newStatus = computeBoxStatus(newSlotId, box.occupiedCount, box.capacity);
 
-    // 3. Execute all writes in one transaction — rollback everything on failure
-    const updatedBox = await this.prisma.$transaction(async (tx) => {
-      // Update box location and status
-      const movedBox = await tx.movableBox.update({
-        where: { id: boxId },
-        data: { 
-          slotId: newSlotId,
-          status: newStatus,
-        },
-        include: {
-          slot: { include: { row: { include: { shelf: { include: { room: true } } } } } },
-        },
-      });
-
-      // Write the BOX_MOVED audit log entry
-      await tx.movementLog.create({
-        data: {
-          action: 'BOX_MOVED',
-          fromLocation,
-          toLocation,
-          boxId,
-          userId,
-        },
-      });
-
-      return movedBox;
-    });
-
-    return updatedBox;
-  }
-
-  /**
-   * Batch assign passports to a box (initial placement or return from owner).
-   * Enforces capacity, does location slot mismatch check with optional override.
-   */
-  async batchAssignPassportsToBox(
-    passportIds: string[],
-    boxId: string,
-    slotQrCode: string | undefined,
-    overrideLocation: boolean,
-    userId: string,
-    action: 'PASSPORT_ASSIGNED' | 'PASSPORT_RETURNED',
-  ) {
-    // 1. Fetch box with current slot info
-    const box = await this.prisma.movableBox.findUnique({
-      where: { id: boxId },
-      include: {
-        slot: { include: { row: { include: { shelf: { include: { room: true } } } } } },
-      },
-    });
-
-    if (!box) throw new NotFoundException(`Box ${boxId} not found`);
-    if (box.status === 'INACTIVE') {
-      throw new BadRequestException(`Box ${box.label} is inactive`);
-    }
-
-    // 2. Fetch passports
-    const passports = await this.prisma.passport.findMany({
-      where: { id: { in: passportIds } },
-    });
-
-    if (passports.length !== passportIds.length) {
-      throw new NotFoundException('One or more passports not found');
-    }
-
-    // 3. Capacity check
-    const needed = passportIds.length;
-    if (box.occupiedCount + needed > box.capacity) {
-      throw new BadRequestException(
-        `Box ${box.label} does not have enough capacity. Needed: ${needed}, Available: ${box.capacity - box.occupiedCount}`,
-      );
-    }
-
-    // 4. Slot Verification & Override Logic
-    let targetSlotId = box.slotId;
-    let boxMovedLocationChange: { from: string | null; to: string } | null = null;
-
-    if (slotQrCode) {
-      const scannedSlot = await this.prisma.slot.findUnique({
-        where: { qrCode: slotQrCode },
-        include: { row: { include: { shelf: { include: { room: true } } } } },
-      });
-
-      if (!scannedSlot) {
-        throw new NotFoundException(`Slot with QR code ${slotQrCode} not found`);
-      }
-
-      if (box.slotId !== scannedSlot.id) {
-        if (!overrideLocation) {
-          const currentLoc = box.slot
-            ? `${box.slot.row.shelf.room.name} / ${box.slot.row.shelf.name} / ${box.slot.row.name} / ${box.slot.name}`
-            : 'Unplaced';
-          const scannedLoc = `${scannedSlot.row.shelf.room.name} / ${scannedSlot.row.shelf.name} / ${scannedSlot.row.name} / ${scannedSlot.name}`;
-          
-          throw new BadRequestException({
-            error: 'LOCATION_MISMATCH',
-            message: `Box ${box.label} is registered at "${currentLoc}", but physically scanned at "${scannedLoc}". Do you want to override and correct the box location?`,
-            currentLocation: currentLoc,
-            scannedLocation: scannedLoc,
-          });
-        } else {
-          // Override is true: we update the box location to the scanned slot
-          targetSlotId = scannedSlot.id;
-          boxMovedLocationChange = {
-            from: buildLocationPath(box.slot),
-            to: buildLocationPath(scannedSlot),
-          };
-        }
-      }
-    }
-
-    const targetSlot = targetSlotId
-      ? await this.prisma.slot.findUnique({
-          where: { id: targetSlotId },
-          include: { row: { include: { shelf: { include: { room: true } } } } },
-        })
-      : null;
-
-    const toLocation = buildLocationPath(targetSlot);
-
-    // 5. Transaction-wrapped write operation
-    return this.prisma.$transaction(async (tx) => {
-      // If override location change was triggered, move the box first
-      if (boxMovedLocationChange) {
-        await tx.movableBox.update({
+    // 4. Execute all writes in one transaction — rollback everything on failure
+    try {
+      const updatedBox = await this.prisma.$transaction(async (tx) => {
+        // Update box location and status
+        const movedBox = await tx.movableBox.update({
           where: { id: boxId },
-          data: { slotId: targetSlotId },
+          data: { 
+            slotId: newSlotId,
+            status: newStatus,
+          },
+          include: {
+            slot: { include: { row: { include: { shelf: { include: { room: true } } } } } },
+          },
         });
 
+        // Write the BOX_MOVED audit log entry
         await tx.movementLog.create({
           data: {
             action: 'BOX_MOVED',
-            fromLocation: boxMovedLocationChange.from,
-            toLocation: boxMovedLocationChange.to,
-            boxId,
-            userId,
-          },
-        });
-      }
-
-      // Update box occupancy and status
-      const newOccupiedCount = box.occupiedCount + needed;
-      // Compute status using centralized logic
-      const newStatus = computeBoxStatus(targetSlotId, newOccupiedCount, box.capacity);
-        
-      await tx.movableBox.update({
-        where: { id: boxId },
-        data: {
-          occupiedCount: newOccupiedCount,
-          status: newStatus,
-        },
-      });
-
-      // Update all passports
-      await tx.passport.updateMany({
-        where: { id: { in: passportIds } },
-        data: {
-          boxId,
-          status: 'IN_BOX',
-          dateReturned: action === 'PASSPORT_RETURNED' ? new Date() : undefined,
-        },
-      });
-
-      // Create movement logs for all passports
-      for (const passportId of passportIds) {
-        await tx.movementLog.create({
-          data: {
-            action,
-            fromLocation: null,
+            fromLocation,
             toLocation,
-            passportId,
             boxId,
             userId,
           },
         });
-      }
 
-      return { success: true, count: needed };
+        return movedBox;
+      });
+
+      return updatedBox;
+    } catch (error) {
+      // Handle unique constraint violation
+      if (error.code === 'P2002' && error.meta?.target?.includes('slotId')) {
+        const slotLocation = buildLocationPath(newSlot);
+        throw new ConflictException(
+          `This slot at ${slotLocation} is already occupied by another box. ` +
+          `Please choose a different slot.`
+        );
+      }
+      throw error;
+    }
+  }
+
+
+
+  /**
+   * Assign a single passport - simplified version without enhanced verification.
+   * For compatibility with existing mobile app calls that don't use box QR verification.
+   */
+  private validatePassportsForBoxAction(
+    passports: { id: string; qrCode: string; holderName: string; status: string }[],
+    action: 'PASSPORT_ASSIGNED' | 'PASSPORT_RETURNED',
+  ) {
+    const invalid = passports.filter((p) => p.status !== 'ISSUED');
+    if (invalid.length === 0) return;
+
+    const names = invalid.map((p) => `${p.holderName} (${p.qrCode})`).join(', ');
+    const verb = action === 'PASSPORT_RETURNED' ? 'returned to storage' : 'assigned to a box';
+    throw new BadRequestException(
+      `Only ISSUED passports can be ${verb}. Not eligible: ${names}`,
+    );
+  }
+
+  private async resolveSlotForBoxAssignment(
+    box: BoxWithSlot,
+    slotQrCode: string | undefined,
+    overrideLocation: boolean,
+  ): Promise<{ targetSlot: SlotWithPath | null; shouldRelocate: boolean }> {
+    if (!slotQrCode) {
+      return { targetSlot: box.slot, shouldRelocate: false };
+    }
+
+    const scannedSlot = await this.prisma.slot.findUnique({
+      where: { qrCode: slotQrCode },
+      include: { row: { include: { shelf: { include: { room: true } } } } },
+    });
+
+    if (!scannedSlot) {
+      throw new NotFoundException(`Slot with QR "${slotQrCode}" not found`);
+    }
+
+    if (!overrideLocation) {
+      if (box.slotId !== scannedSlot.id) {
+        const currentLocation = buildLocationPath(box.slot);
+        const scannedLocation = buildLocationPath(scannedSlot);
+
+        throw new ConflictException({
+          error: 'LOCATION_MISMATCH',
+          currentLocation,
+          scannedLocation,
+          message: `Box ${box.label} is registered at "${currentLocation}" but found at "${scannedLocation}"`,
+        });
+      }
+      return { targetSlot: scannedSlot, shouldRelocate: false };
+    }
+
+    if (box.slotId === scannedSlot.id) {
+      return { targetSlot: scannedSlot, shouldRelocate: false };
+    }
+
+    const conflict = await this.locationValidation.validateBoxSlotAssignment(
+      box.id,
+      scannedSlot.id,
+    );
+
+    if (!conflict.canOverride) {
+      throw new ConflictException({
+        error: 'LOCATION_CONFLICT',
+        message: conflict.message,
+        suggestedAction: conflict.suggestedAction,
+      });
+    }
+
+    return { targetSlot: scannedSlot, shouldRelocate: true };
+  }
+
+  private async relocateBoxInTransaction(
+    tx: Prisma.TransactionClient,
+    box: BoxWithSlot,
+    targetSlot: SlotWithPath,
+    userId: string,
+  ) {
+    const fromLocation = buildLocationPath(box.slot);
+    const toLocation = buildLocationPath(targetSlot);
+    const newStatus = computeBoxStatus(targetSlot.id, box.occupiedCount, box.capacity);
+
+    await tx.movableBox.update({
+      where: { id: box.id },
+      data: {
+        slotId: targetSlot.id,
+        status: newStatus,
+      },
+    });
+
+    await tx.movementLog.create({
+      data: {
+        action: 'BOX_MOVED',
+        fromLocation,
+        toLocation,
+        boxId: box.id,
+        userId,
+      },
     });
   }
 
-  /**
-   * Assign a single passport (wraps batchAssignPassportsToBox).
-   */
   async assignPassportToBox(
     passportId: string,
     boxId: string,
@@ -504,14 +497,170 @@ export class LocationService {
     slotQrCode?: string,
     overrideLocation = false,
   ) {
-    return this.batchAssignPassportsToBox(
-      [passportId],
-      boxId,
+    const box = await this.prisma.movableBox.findUnique({
+      where: { id: boxId },
+      include: {
+        slot: { include: { row: { include: { shelf: { include: { room: true } } } } } },
+      },
+    });
+
+    if (!box) throw new NotFoundException(`Box ${boxId} not found`);
+
+    if (box.capacity - box.occupiedCount < 1) {
+      throw new BadRequestException(`Box ${box.label} is at full capacity`);
+    }
+
+    const passport = await this.prisma.passport.findUnique({
+      where: { id: passportId },
+    });
+
+    if (!passport) throw new NotFoundException(`Passport ${passportId} not found`);
+
+    this.validatePassportsForBoxAction([passport], action);
+
+    const { targetSlot, shouldRelocate } = await this.resolveSlotForBoxAssignment(
+      box,
       slotQrCode,
       overrideLocation,
-      userId,
-      action,
     );
+
+    const toLocation = buildLocationPath(targetSlot ?? box.slot);
+
+    return this.prisma.$transaction(async (tx) => {
+      if (shouldRelocate && targetSlot) {
+        await this.relocateBoxInTransaction(tx, box, targetSlot, userId);
+      }
+
+      const newOccupiedCount = box.occupiedCount + 1;
+      const activeSlotId = targetSlot?.id ?? box.slotId;
+      const newStatus = computeBoxStatus(activeSlotId, newOccupiedCount, box.capacity);
+
+      await tx.movableBox.update({
+        where: { id: boxId },
+        data: {
+          occupiedCount: newOccupiedCount,
+          status: newStatus,
+        },
+      });
+
+      await tx.passport.update({
+        where: { id: passportId },
+        data: {
+          boxId: boxId,
+          status: 'IN_BOX',
+          dateReturned: action === 'PASSPORT_RETURNED' ? new Date() : undefined,
+        },
+      });
+
+      await tx.movementLog.create({
+        data: {
+          action,
+          fromLocation: null,
+          toLocation,
+          passportId,
+          boxId: boxId,
+          userId,
+        },
+      });
+
+      return {
+        success: true,
+        count: 1,
+      };
+    });
+  }
+
+  /**
+   * Batch assign multiple passports - simplified version without enhanced verification.
+   * For compatibility with existing mobile app calls that don't use box QR verification.
+   */
+  async batchAssignPassportsToBox(
+    passportIds: string[],
+    boxId: string,
+    userId: string,
+    action: 'PASSPORT_ASSIGNED' | 'PASSPORT_RETURNED',
+    slotQrCode?: string,
+    overrideLocation = false,
+  ) {
+    const box = await this.prisma.movableBox.findUnique({
+      where: { id: boxId },
+      include: {
+        slot: { include: { row: { include: { shelf: { include: { room: true } } } } } },
+      },
+    });
+
+    if (!box) throw new NotFoundException(`Box ${boxId} not found`);
+
+    const needed = passportIds.length;
+    const available = box.capacity - box.occupiedCount;
+    if (available < needed) {
+      throw new BadRequestException(
+        `Box ${box.label} does not have enough capacity. Needed: ${needed}, Available: ${available}`,
+      );
+    }
+
+    const passports = await this.prisma.passport.findMany({
+      where: { id: { in: passportIds } },
+    });
+
+    if (passports.length !== passportIds.length) {
+      throw new NotFoundException('One or more passports not found');
+    }
+
+    this.validatePassportsForBoxAction(passports, action);
+
+    const { targetSlot, shouldRelocate } = await this.resolveSlotForBoxAssignment(
+      box,
+      slotQrCode,
+      overrideLocation,
+    );
+
+    const toLocation = buildLocationPath(targetSlot ?? box.slot);
+
+    return this.prisma.$transaction(async (tx) => {
+      if (shouldRelocate && targetSlot) {
+        await this.relocateBoxInTransaction(tx, box, targetSlot, userId);
+      }
+
+      const newOccupiedCount = box.occupiedCount + needed;
+      const activeSlotId = targetSlot?.id ?? box.slotId;
+      const newStatus = computeBoxStatus(activeSlotId, newOccupiedCount, box.capacity);
+
+      await tx.movableBox.update({
+        where: { id: boxId },
+        data: {
+          occupiedCount: newOccupiedCount,
+          status: newStatus,
+        },
+      });
+
+      await tx.passport.updateMany({
+        where: { id: { in: passportIds } },
+        data: {
+          boxId: boxId,
+          status: 'IN_BOX',
+          dateReturned: action === 'PASSPORT_RETURNED' ? new Date() : undefined,
+        },
+      });
+
+      for (const passportId of passportIds) {
+        await tx.movementLog.create({
+          data: {
+            action,
+            fromLocation: null,
+            toLocation,
+            passportId,
+            boxId: boxId,
+            userId,
+          },
+        });
+      }
+
+      return {
+        success: true,
+        count: needed,
+      };
+    });
   }
 
   // ─────────────────────────────────────────────────────────────

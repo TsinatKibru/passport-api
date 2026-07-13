@@ -99,7 +99,7 @@ model MovableBox {
   updatedAt     DateTime  @updatedAt
 
   // Current physical location — null if box is not placed in a slot yet
-  slotId String?
+  slotId String? @unique
   slot   Slot?   @relation(fields: [slotId], references: [id])
 
   passports    Passport[]

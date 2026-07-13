@@ -68,10 +68,10 @@ export class PassportController {
     return this.locationService.batchAssignPassportsToBox(
       dto.passportIds,
       dto.boxId,
-      dto.slotQrCode,
-      dto.overrideLocation ?? false,
       user.sub,
       dto.action,
+      dto.slotQrCode,
+      dto.overrideLocation ?? false,
     );
   }
 
