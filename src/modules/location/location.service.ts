@@ -777,6 +777,8 @@ export class LocationService {
         vacantCount: box.capacity - box.occupiedCount,
         status: box.status,
         location: buildLocationPath(box.slot),
+        createdAt: box.createdAt,
+        updatedAt: box.updatedAt,
       }))
       .filter((box) => box.vacantCount >= neededSpaces)
       .sort((a, b) => b.vacantCount - a.vacantCount); // Sort by most vacant slots first
