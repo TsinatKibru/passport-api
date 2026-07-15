@@ -169,4 +169,39 @@ export class DashboardService {
       return { ...row, vacant, occupancyRate };
     });
   }
+
+  /**
+   * The given officer's own activity counts for today (since local midnight):
+   * passports issued, passports returned, and boxes moved.
+   */
+  async getMyActivity(userId: string) {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const [issuedToday, returnsToday, boxMovesToday] = await Promise.all([
+      this.prisma.movementLog.count({
+        where: {
+          userId,
+          action: 'PASSPORT_ISSUED',
+          createdAt: { gte: startOfToday },
+        },
+      }),
+      this.prisma.movementLog.count({
+        where: {
+          userId,
+          action: 'PASSPORT_RETURNED',
+          createdAt: { gte: startOfToday },
+        },
+      }),
+      this.prisma.movementLog.count({
+        where: {
+          userId,
+          action: 'BOX_MOVED',
+          createdAt: { gte: startOfToday },
+        },
+      }),
+    ]);
+
+    return { issuedToday, returnsToday, boxMovesToday };
+  }
 }

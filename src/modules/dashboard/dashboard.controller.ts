@@ -2,6 +2,8 @@ import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { DashboardService } from './dashboard.service';
 
 /**
@@ -56,5 +58,17 @@ export class DashboardController {
   @Roles('ADMIN', 'STAFF')
   async getRoomOccupancy() {
     return this.dashboardService.getRoomOccupancy();
+  }
+
+  /**
+   * GET /api/dashboard/my-activity
+   *
+   * The signed-in officer's own activity counts for today (issued / returned /
+   * box moves), derived from their movement logs.
+   */
+  @Get('my-activity')
+  @Roles('ADMIN', 'STAFF')
+  async getMyActivity(@CurrentUser() user: JwtPayload) {
+    return this.dashboardService.getMyActivity(user.sub);
   }
 }
