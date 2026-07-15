@@ -119,6 +119,15 @@ export class BoxService {
     const box = await this.prisma.movableBox.findUnique({
       where: { id },
       include: {
+        passports: {
+          select: {
+            id: true,
+            qrCode: true,
+            holderName: true,
+            holderIdNo: true,
+            status: true,
+          },
+        },
         slot: {
           include: {
             row: {
@@ -143,6 +152,15 @@ export class BoxService {
     const box = await this.prisma.movableBox.findUnique({
       where: { qrCode },
       include: {
+        passports: {
+          select: {
+            id: true,
+            qrCode: true,
+            holderName: true,
+            holderIdNo: true,
+            status: true,
+          },
+        },
         slot: {
           include: {
             row: {

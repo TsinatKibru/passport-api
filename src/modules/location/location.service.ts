@@ -506,6 +506,10 @@ export class LocationService {
 
     if (!box) throw new NotFoundException(`Box ${boxId} not found`);
 
+    if (!box.slotId && !slotQrCode) {
+      throw new BadRequestException(`Box ${box.label} is currently not placed in any slot. You must scan a slot QR code first.`);
+    }
+
     if (box.capacity - box.occupiedCount < 1) {
       throw new BadRequestException(`Box ${box.label} is at full capacity`);
     }
@@ -590,6 +594,10 @@ export class LocationService {
     });
 
     if (!box) throw new NotFoundException(`Box ${boxId} not found`);
+
+    if (!box.slotId && !slotQrCode) {
+      throw new BadRequestException(`Box ${box.label} is currently not placed in any slot. You must scan a slot QR code first.`);
+    }
 
     const needed = passportIds.length;
     const available = box.capacity - box.occupiedCount;
@@ -880,71 +888,91 @@ export class LocationService {
     search?: string,
     roomId?: string,
   ) {
-    // Build where clause for efficient DB filtering
-    const where: any = {
-      status: { in: ['ACTIVE'] },
-    };
-
-    // Filter by room if specified
-    if (roomId) {
-      where.slot = {
-        row: {
-          shelf: {
-            roomId,
-          },
-        },
-      };
-    }
-
-    // Search by label or QR code if specified
-    if (search) {
-      where.OR = [
-        { label: { contains: search, mode: 'insensitive' as const } },
-        { qrCode: { contains: search, mode: 'insensitive' as const } },
-      ];
-    }
-
-    // Fetch all matching boxes (we need to filter by vacantCount in-memory)
-    // Note: Can't filter by vacantCount in DB since it's computed
-    const boxes = await this.prisma.movableBox.findMany({
-      where,
-      include: {
-        slot: { include: { row: { include: { shelf: { include: { room: true } } } } } },
-      },
-      // Order by occupiedCount ascending (approximates most vacant first)
-      orderBy: { occupiedCount: 'asc' },
-    });
-
-    // Compute vacant count and filter by needed spaces
-    const availableBoxes = boxes
-      .map((box) => ({
-        id: box.id,
-        qrCode: box.qrCode,
-        label: box.label,
-        capacity: box.capacity,
-        occupiedCount: box.occupiedCount,
-        vacantCount: box.capacity - box.occupiedCount,
-        status: box.status,
-        location: buildLocationPath(box.slot),
-        createdAt: box.createdAt,
-        updatedAt: box.updatedAt,
-      }))
-      .filter((box) => box.vacantCount >= neededSpaces)
-      .sort((a, b) => b.vacantCount - a.vacantCount); // Sort by most vacant slots first
-
-    // Apply pagination to filtered results
-    const total = availableBoxes.length;
-    const totalPages = Math.ceil(total / limit);
     const skip = (page - 1) * limit;
-    const paginatedData = availableBoxes.slice(skip, skip + limit);
+    const searchPattern = search ? `%${search}%` : null;
+
+    // Use raw query for efficient database-level pagination, sorting, and space computation
+    const boxes = await this.prisma.$queryRaw<any[]>`
+      SELECT 
+        b.id,
+        b."qrCode",
+        b.label,
+        b.capacity,
+        b."occupiedCount",
+        b.status,
+        b."createdAt",
+        b."updatedAt",
+        b."slotId",
+        s.name as "slotName",
+        r.name as "rowName",
+        sh.name as "shelfName",
+        ro.name as "roomName"
+      FROM movable_boxes b
+      INNER JOIN slots s ON b."slotId" = s.id
+      INNER JOIN rows r ON s."rowId" = r.id
+      INNER JOIN shelves sh ON r."shelfId" = sh.id
+      INNER JOIN rooms ro ON sh."roomId" = ro.id
+      WHERE b.status = 'ACTIVE'
+        AND b."slotId" IS NOT NULL
+        AND (b.capacity - b."occupiedCount") >= ${neededSpaces}
+        ${searchPattern ? Prisma.sql`AND (b.label ILIKE ${searchPattern} OR b."qrCode" ILIKE ${searchPattern})` : Prisma.empty}
+        ${roomId ? Prisma.sql`AND ro.id = ${roomId}` : Prisma.empty}
+      ORDER BY (b.capacity - b."occupiedCount") DESC, b."occupiedCount" ASC
+      LIMIT ${limit} OFFSET ${skip}
+    `;
+
+    const countResult = await this.prisma.$queryRaw<any[]>`
+      SELECT COUNT(*)::int as count
+      FROM movable_boxes b
+      INNER JOIN slots s ON b."slotId" = s.id
+      INNER JOIN rows r ON s."rowId" = r.id
+      INNER JOIN shelves sh ON r."shelfId" = sh.id
+      INNER JOIN rooms ro ON sh."roomId" = ro.id
+      WHERE b.status = 'ACTIVE'
+        AND b."slotId" IS NOT NULL
+        AND (b.capacity - b."occupiedCount") >= ${neededSpaces}
+        ${searchPattern ? Prisma.sql`AND (b.label ILIKE ${searchPattern} OR b."qrCode" ILIKE ${searchPattern})` : Prisma.empty}
+        ${roomId ? Prisma.sql`AND ro.id = ${roomId}` : Prisma.empty}
+    `;
+
+    const total = countResult[0]?.count || 0;
+    const totalPages = Math.ceil(total / limit);
+
+    const formattedData = boxes.map((box) => ({
+      id: box.id,
+      qrCode: box.qrCode,
+      label: box.label,
+      capacity: box.capacity,
+      occupiedCount: box.occupiedCount,
+      vacantCount: box.capacity - box.occupiedCount,
+      status: box.status,
+      location: `${box.roomName} / ${box.shelfName} / ${box.rowName} / ${box.slotName}`,
+      createdAt: box.createdAt,
+      updatedAt: box.updatedAt,
+    }));
 
     return {
-      data: paginatedData,
+      data: formattedData,
       total,
       page,
       limit,
       totalPages,
       hasMore: page < totalPages,
     };
+  }
+
+  /**
+   * Validate passport return custody workflow using selected, physical box and slot
+   */
+  async validatePassportReturn(
+    selectedBoxId: string,
+    scannedBoxQr: string,
+    scannedSlotQr: string,
+  ) {
+    return this.locationValidation.validatePassportReturn(
+      selectedBoxId,
+      scannedBoxQr,
+      scannedSlotQr,
+    );
   }
 }
