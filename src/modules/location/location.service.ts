@@ -960,19 +960,4 @@ export class LocationService {
       hasMore: page < totalPages,
     };
   }
-
-  /**
-   * Validate passport return custody workflow using selected, physical box and slot
-   */
-  async validatePassportReturn(
-    selectedBoxId: string,
-    scannedBoxQr: string,
-    scannedSlotQr: string,
-  ) {
-    return this.locationValidation.validatePassportReturn(
-      selectedBoxId,
-      scannedBoxQr,
-      scannedSlotQr,
-    );
-  }
 }

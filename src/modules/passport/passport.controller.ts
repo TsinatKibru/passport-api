@@ -70,8 +70,6 @@ export class PassportController {
       dto.boxId,
       user.sub,
       dto.action,
-      dto.slotQrCode,
-      dto.overrideLocation ?? false,
     );
   }
 
@@ -86,8 +84,6 @@ export class PassportController {
       dto.boxId,
       'PASSPORT_ASSIGNED',
       user.sub,
-      dto.slotQrCode,
-      dto.overrideLocation ?? false,
     );
   }
 
@@ -102,8 +98,6 @@ export class PassportController {
       dto.boxId,
       'PASSPORT_RETURNED',
       user.sub,
-      dto.slotQrCode,
-      dto.overrideLocation ?? false,
     );
   }
 

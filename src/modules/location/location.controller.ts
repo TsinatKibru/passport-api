@@ -171,17 +171,4 @@ export class LocationController {
   ) {
     return this.locationService.bulkAssignBoxesToSlots(dto.boxIds, user.sub, dto.roomId);
   }
-
-  /** POST /api/location/validate-return — validate physical alignment of box and slot in return flow */
-  @Post('validate-return')
-  @Roles('ADMIN', 'STAFF')
-  validateReturn(
-    @Body() dto: { selectedBoxId: string; scannedBoxQr: string; scannedSlotQr: string },
-  ) {
-    return this.locationService.validatePassportReturn(
-      dto.selectedBoxId,
-      dto.scannedBoxQr,
-      dto.scannedSlotQr,
-    );
-  }
 }
