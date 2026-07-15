@@ -91,4 +91,82 @@ export class DashboardService {
       totalRooms,
     };
   }
+
+  /**
+   * Daily activity trend for the last `days` days (inclusive of today).
+   *
+   * Returns one entry per day — including days with zero activity — so the
+   * client can render a continuous chart. Counts are split by movement action.
+   * Uses generate_series as a date spine left-joined onto movement_logs.
+   */
+  async getActivityTrend(days: number) {
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        date: string;
+        assigned: number;
+        returned: number;
+        issued: number;
+        moved: number;
+        total: number;
+      }>
+    >`
+      SELECT
+        to_char(d.day, 'YYYY-MM-DD') AS date,
+        COALESCE(SUM(CASE WHEN ml.action = 'PASSPORT_ASSIGNED' THEN 1 ELSE 0 END), 0)::int AS assigned,
+        COALESCE(SUM(CASE WHEN ml.action = 'PASSPORT_RETURNED' THEN 1 ELSE 0 END), 0)::int AS returned,
+        COALESCE(SUM(CASE WHEN ml.action = 'PASSPORT_ISSUED' THEN 1 ELSE 0 END), 0)::int AS issued,
+        COALESCE(SUM(CASE WHEN ml.action = 'BOX_MOVED' THEN 1 ELSE 0 END), 0)::int AS moved,
+        COUNT(ml.id)::int AS total
+      FROM generate_series(
+        CURRENT_DATE - make_interval(days => ${days - 1}::int),
+        CURRENT_DATE,
+        '1 day'::interval
+      ) AS d(day)
+      LEFT JOIN movement_logs ml ON ml."createdAt"::date = d.day::date
+      GROUP BY d.day
+      ORDER BY d.day ASC
+    `;
+
+    return rows;
+  }
+
+  /**
+   * Per-room storage occupancy — capacity, occupied count and box count for
+   * every room. Powers the "organised storage" breakdown on the dashboard.
+   * Rooms with no boxes are still returned (with zeros).
+   */
+  async getRoomOccupancy() {
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        roomId: string;
+        roomName: string;
+        boxes: number;
+        capacity: number;
+        occupied: number;
+      }>
+    >`
+      SELECT
+        ro.id AS "roomId",
+        ro.name AS "roomName",
+        COUNT(DISTINCT b.id)::int AS boxes,
+        COALESCE(SUM(b.capacity), 0)::int AS capacity,
+        COALESCE(SUM(b."occupiedCount"), 0)::int AS occupied
+      FROM rooms ro
+      LEFT JOIN shelves sh ON sh."roomId" = ro.id
+      LEFT JOIN rows r ON r."shelfId" = sh.id
+      LEFT JOIN slots s ON s."rowId" = r.id
+      LEFT JOIN movable_boxes b ON b."slotId" = s.id
+      GROUP BY ro.id, ro.name
+      ORDER BY ro.name ASC
+    `;
+
+    return rows.map((row) => {
+      const vacant = row.capacity - row.occupied;
+      const occupancyRate =
+        row.capacity > 0
+          ? parseFloat(((row.occupied / row.capacity) * 100).toFixed(1))
+          : 0;
+      return { ...row, vacant, occupancyRate };
+    });
+  }
 }
