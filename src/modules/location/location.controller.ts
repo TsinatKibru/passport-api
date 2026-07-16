@@ -145,17 +145,27 @@ export class LocationController {
   // AUDIT LOGS
   // ─────────────────────────────────────────────────────────────
 
-  /** GET /api/location/logs — paginated movement logs */
+  /** GET /api/location/logs — paginated movement logs with filter options */
   @Get('logs')
   @Roles('ADMIN', 'STAFF')
   getLogs(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('action') action?: string,
+    @Query('userId') userId?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
   ) {
-    return this.locationService.getMovementLogs(
-      page ? parseInt(page, 10) : 1,
-      limit ? parseInt(limit, 10) : 20,
-    );
+    return this.locationService.getMovementLogs({
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 20,
+      search,
+      action,
+      userId,
+      startDate,
+      endDate,
+    });
   }
 
   // ─────────────────────────────────────────────────────────────

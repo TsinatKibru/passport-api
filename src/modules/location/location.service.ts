@@ -675,10 +675,74 @@ export class LocationService {
   // AUDIT LOGS
   // ─────────────────────────────────────────────────────────────
 
-  async getMovementLogs(page = 1, limit = 20) {
+  async getMovementLogs(options: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    action?: string;
+    userId?: string;
+    startDate?: string;
+    endDate?: string;
+  }) {
+    const page = options.page || 1;
+    const limit = options.limit || 20;
     const skip = (page - 1) * limit;
+
+    const where: any = {};
+
+    if (options.action) {
+      where.action = options.action;
+    }
+
+    if (options.userId) {
+      where.userId = options.userId;
+    }
+
+    if (options.startDate || options.endDate) {
+      where.createdAt = {};
+      if (options.startDate) {
+        where.createdAt.gte = new Date(options.startDate);
+      }
+      if (options.endDate) {
+        const end = new Date(options.endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+
+    if (options.search) {
+      const searchLower = options.search.trim();
+      where.OR = [
+        {
+          passport: {
+            OR: [
+              { holderName: { contains: searchLower, mode: 'insensitive' } },
+              { qrCode: { contains: searchLower, mode: 'insensitive' } },
+            ],
+          },
+        },
+        {
+          box: {
+            OR: [
+              { label: { contains: searchLower, mode: 'insensitive' } },
+              { qrCode: { contains: searchLower, mode: 'insensitive' } },
+            ],
+          },
+        },
+        {
+          user: {
+            OR: [
+              { name: { contains: searchLower, mode: 'insensitive' } },
+              { email: { contains: searchLower, mode: 'insensitive' } },
+            ],
+          },
+        },
+      ];
+    }
+
     const [data, total] = await Promise.all([
       this.prisma.movementLog.findMany({
+        where,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
@@ -688,7 +752,7 @@ export class LocationService {
           user: { select: { id: true, name: true, email: true } },
         },
       }),
-      this.prisma.movementLog.count(),
+      this.prisma.movementLog.count({ where }),
     ]);
 
     return {
