@@ -505,8 +505,8 @@ export class AuthService {
     this.resetOtps.set(email, { code, expiresAt });
     console.log(`[PASSWORD RESET OTP] Email: ${email} | Code: ${code} | Expires: ${expiresAt.toISOString()}`);
 
-    // Send the email (runs asynchronously, does not block client response)
-    this.sendOtpEmail(email, code);
+    // Send the email and wait for completion (critical for Vercel/serverless environments)
+    await this.sendOtpEmail(email, code);
 
     return {
       message: 'Password reset OTP generated successfully.',
