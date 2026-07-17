@@ -4,13 +4,17 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { LogAction, Prisma } from '@prisma/client';
 import { LocationValidationService } from '../../common/services/location-validation.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateShelfDto } from './dto/create-shelf.dto';
 import { CreateRowDto } from './dto/create-row.dto';
 import { CreateSlotDto } from './dto/create-slot.dto';
+import { UpdateRoomDto } from './dto/update-room.dto';
+import { UpdateShelfDto } from './dto/update-shelf.dto';
+import { UpdateRowDto } from './dto/update-row.dto';
+import { UpdateSlotDto } from './dto/update-slot.dto';
 import { DEFAULT_BOX_CAPACITY } from '../../common/constants/box.constants';
 import { computeBoxStatus } from '../../common/utils/box-status.util';
 import { buildLocationPath } from '../../common/utils/location.util';
@@ -41,15 +45,24 @@ export class LocationService {
     });
   }
 
-  async createRoom(dto: CreateRoomDto) {
+  async createRoom(dto: CreateRoomDto, userId: string) {
     try {
-      return await this.prisma.room.create({ data: dto });
+      const room = await this.prisma.room.create({ data: dto });
+      await this.prisma.movementLog.create({
+        data: {
+          action: LogAction.ROOM_CREATED,
+          toLocation: room.name,
+          notes: `Created room "${room.name}"`,
+          userId,
+        },
+      });
+      return room;
     } catch (error: any) {
       if (error.code === 'P2002') {
-        const field = error.meta?.target?.[0];
-        if (field === 'qrCode') {
+        const target = error.meta?.target;
+        if (target?.includes('qrCode')) {
           throw new ConflictException(`QR code "${dto.qrCode}" is already in use by another room`);
-        } else if (field === 'name') {
+        } else if (target?.includes('name')) {
           throw new ConflictException(`Room name "${dto.name}" already exists. Please choose a different name.`);
         }
       }
@@ -57,10 +70,76 @@ export class LocationService {
     }
   }
 
-  async deleteRoom(id: string) {
+  async updateRoom(id: string, dto: UpdateRoomDto, userId: string) {
     const room = await this.prisma.room.findUnique({ where: { id } });
     if (!room) throw new NotFoundException(`Room ${id} not found`);
-    return this.prisma.room.delete({ where: { id } });
+
+    try {
+      const updated = await this.prisma.room.update({
+        where: { id },
+        data: dto,
+      });
+
+      if (dto.name && dto.name !== room.name) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.ROOM_UPDATED,
+            fromLocation: room.name,
+            toLocation: updated.name,
+            notes: `Renamed room from "${room.name}" to "${updated.name}"`,
+            userId,
+          },
+        });
+      } else if (dto.qrCode && dto.qrCode !== room.qrCode) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.ROOM_UPDATED,
+            fromLocation: room.name,
+            toLocation: updated.name,
+            notes: `Updated QR code for room "${updated.name}"`,
+            userId,
+          },
+        });
+      }
+      return updated;
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const target = error.meta?.target;
+        if (target?.includes('qrCode')) {
+          throw new ConflictException(`QR code "${dto.qrCode}" is already in use by another room`);
+        } else if (target?.includes('name')) {
+          throw new ConflictException(`Room name "${dto.name}" already exists. Please choose a different name.`);
+        }
+      }
+      throw new BadRequestException('Failed to update room');
+    }
+  }
+
+  async deleteRoom(id: string, userId: string) {
+    const room = await this.prisma.room.findUnique({ 
+      where: { id },
+      include: { _count: { select: { shelves: true } } }
+    });
+    if (!room) throw new NotFoundException(`Room ${id} not found`);
+    
+    if (room._count.shelves > 0) {
+      throw new BadRequestException(
+        `Room "${room.name}" contains ${room._count.shelves} active shelf/shelves. Delete shelves first.`
+      );
+    }
+
+    const deleted = await this.prisma.room.delete({ where: { id } });
+
+    await this.prisma.movementLog.create({
+      data: {
+        action: LogAction.ROOM_DELETED,
+        fromLocation: deleted.name,
+        notes: `Deleted room "${deleted.name}"`,
+        userId,
+      },
+    });
+
+    return deleted;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -78,11 +157,20 @@ export class LocationService {
     });
   }
 
-  async createShelf(dto: CreateShelfDto) {
+  async createShelf(dto: CreateShelfDto, userId: string) {
     const room = await this.prisma.room.findUnique({ where: { id: dto.roomId } });
     if (!room) throw new NotFoundException(`Room ${dto.roomId} not found`);
     try {
-      return await this.prisma.shelf.create({ data: dto });
+      const shelf = await this.prisma.shelf.create({ data: dto });
+      await this.prisma.movementLog.create({
+        data: {
+          action: LogAction.SHELF_CREATED,
+          toLocation: `${room.name} / ${shelf.name}`,
+          notes: `Created shelf "${shelf.name}" in room "${room.name}"`,
+          userId,
+        },
+      });
+      return shelf;
     } catch (error: any) {
       if (error.code === 'P2002') {
         const target = error.meta?.target;
@@ -96,10 +184,96 @@ export class LocationService {
     }
   }
 
-  async deleteShelf(id: string) {
-    const shelf = await this.prisma.shelf.findUnique({ where: { id } });
+  async updateShelf(id: string, dto: UpdateShelfDto, userId: string) {
+    const shelf = await this.prisma.shelf.findUnique({ 
+      where: { id },
+      include: { room: true }
+    });
     if (!shelf) throw new NotFoundException(`Shelf ${id} not found`);
-    return this.prisma.shelf.delete({ where: { id } });
+
+    let targetRoom = shelf.room;
+    if (dto.roomId && dto.roomId !== shelf.roomId) {
+      const room = await this.prisma.room.findUnique({ where: { id: dto.roomId } });
+      if (!room) throw new NotFoundException(`Room ${dto.roomId} not found`);
+      targetRoom = room;
+    }
+
+    try {
+      const updated = await this.prisma.shelf.update({
+        where: { id },
+        data: dto,
+      });
+
+      if (dto.name && dto.name !== shelf.name) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.SHELF_UPDATED,
+            fromLocation: `${shelf.room.name} / ${shelf.name}`,
+            toLocation: `${targetRoom.name} / ${updated.name}`,
+            notes: `Renamed shelf from "${shelf.name}" to "${updated.name}" in room "${targetRoom.name}"`,
+            userId,
+          },
+        });
+      } else if (dto.roomId && dto.roomId !== shelf.roomId) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.SHELF_UPDATED,
+            fromLocation: `${shelf.room.name} / ${shelf.name}`,
+            toLocation: `${targetRoom.name} / ${updated.name}`,
+            notes: `Moved shelf "${updated.name}" from room "${shelf.room.name}" to "${targetRoom.name}"`,
+            userId,
+          },
+        });
+      } else if (dto.qrCode && dto.qrCode !== shelf.qrCode) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.SHELF_UPDATED,
+            fromLocation: `${shelf.room.name} / ${shelf.name}`,
+            toLocation: `${targetRoom.name} / ${updated.name}`,
+            notes: `Updated QR code for shelf "${updated.name}" in room "${targetRoom.name}"`,
+            userId,
+          },
+        });
+      }
+      return updated;
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const target = error.meta?.target;
+        if (target?.includes('qrCode')) {
+          throw new ConflictException(`QR code "${dto.qrCode}" is already in use by another shelf`);
+        } else if (target?.includes('roomId') && target?.includes('name')) {
+          throw new ConflictException(`A shelf named "${dto.name}" already exists in room "${targetRoom.name}". Please choose a different name.`);
+        }
+      }
+      throw new BadRequestException('Failed to update shelf');
+    }
+  }
+
+  async deleteShelf(id: string, userId: string) {
+    const shelf = await this.prisma.shelf.findUnique({ 
+      where: { id },
+      include: { room: true, _count: { select: { rows: true } } }
+    });
+    if (!shelf) throw new NotFoundException(`Shelf ${id} not found`);
+
+    if (shelf._count.rows > 0) {
+      throw new BadRequestException(
+        `Shelf "${shelf.name}" contains ${shelf._count.rows} active row(s). Delete rows first.`
+      );
+    }
+
+    const deleted = await this.prisma.shelf.delete({ where: { id } });
+
+    await this.prisma.movementLog.create({
+      data: {
+        action: LogAction.SHELF_DELETED,
+        fromLocation: `${shelf.room.name} / ${deleted.name}`,
+        notes: `Deleted shelf "${deleted.name}" inside room "${shelf.room.name}"`,
+        userId,
+      },
+    });
+
+    return deleted;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -117,11 +291,20 @@ export class LocationService {
     });
   }
 
-  async createRow(dto: CreateRowDto) {
+  async createRow(dto: CreateRowDto, userId: string) {
     const shelf = await this.prisma.shelf.findUnique({ where: { id: dto.shelfId }, include: { room: true } });
     if (!shelf) throw new NotFoundException(`Shelf ${dto.shelfId} not found`);
     try {
-      return await this.prisma.row.create({ data: dto });
+      const row = await this.prisma.row.create({ data: dto });
+      await this.prisma.movementLog.create({
+        data: {
+          action: LogAction.ROW_CREATED,
+          toLocation: `${shelf.room.name} / ${shelf.name} / ${row.name}`,
+          notes: `Created row "${row.name}" in shelf "${shelf.name}" (room "${shelf.room.name}")`,
+          userId,
+        },
+      });
+      return row;
     } catch (error: any) {
       if (error.code === 'P2002') {
         const target = error.meta?.target;
@@ -135,10 +318,99 @@ export class LocationService {
     }
   }
 
-  async deleteRow(id: string) {
-    const row = await this.prisma.row.findUnique({ where: { id } });
+  async updateRow(id: string, dto: UpdateRowDto, userId: string) {
+    const row = await this.prisma.row.findUnique({ 
+      where: { id },
+      include: { shelf: { include: { room: true } } }
+    });
     if (!row) throw new NotFoundException(`Row ${id} not found`);
-    return this.prisma.row.delete({ where: { id } });
+
+    let targetShelf = row.shelf;
+    if (dto.shelfId && dto.shelfId !== row.shelfId) {
+      const shelf = await this.prisma.shelf.findUnique({ where: { id: dto.shelfId }, include: { room: true } });
+      if (!shelf) throw new NotFoundException(`Shelf ${dto.shelfId} not found`);
+      targetShelf = shelf;
+    }
+
+    try {
+      const updated = await this.prisma.row.update({
+        where: { id },
+        data: dto,
+      });
+
+      const oldPath = `${row.shelf.room.name} / ${row.shelf.name} / ${row.name}`;
+      const newPath = `${targetShelf.room.name} / ${targetShelf.name} / ${updated.name}`;
+
+      if (dto.name && dto.name !== row.name) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.ROW_UPDATED,
+            fromLocation: oldPath,
+            toLocation: newPath,
+            notes: `Renamed row from "${row.name}" to "${updated.name}" on shelf "${targetShelf.name}"`,
+            userId,
+          },
+        });
+      } else if (dto.shelfId && dto.shelfId !== row.shelfId) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.ROW_UPDATED,
+            fromLocation: oldPath,
+            toLocation: newPath,
+            notes: `Moved row "${updated.name}" from shelf "${row.shelf.name}" to "${targetShelf.name}"`,
+            userId,
+          },
+        });
+      } else if (dto.qrCode && dto.qrCode !== row.qrCode) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.ROW_UPDATED,
+            fromLocation: oldPath,
+            toLocation: newPath,
+            notes: `Updated QR code for row "${updated.name}"`,
+            userId,
+          },
+        });
+      }
+      return updated;
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const target = error.meta?.target;
+        if (target?.includes('qrCode')) {
+          throw new ConflictException(`QR code "${dto.qrCode}" is already in use by another row`);
+        } else if (target?.includes('shelfId') && target?.includes('name')) {
+          throw new ConflictException(`A row named "${dto.name}" already exists in shelf "${targetShelf.name}". Please choose a different name.`);
+        }
+      }
+      throw new BadRequestException('Failed to update row');
+    }
+  }
+
+  async deleteRow(id: string, userId: string) {
+    const row = await this.prisma.row.findUnique({ 
+      where: { id },
+      include: { shelf: { include: { room: true } }, _count: { select: { slots: true } } }
+    });
+    if (!row) throw new NotFoundException(`Row ${id} not found`);
+
+    if (row._count.slots > 0) {
+      throw new BadRequestException(
+        `Row "${row.name}" contains ${row._count.slots} active slot(s). Delete slots first.`
+      );
+    }
+
+    const deleted = await this.prisma.row.delete({ where: { id } });
+
+    await this.prisma.movementLog.create({
+      data: {
+        action: LogAction.ROW_DELETED,
+        fromLocation: `${row.shelf.room.name} / ${row.shelf.name} / ${deleted.name}`,
+        notes: `Deleted row "${deleted.name}" inside shelf "${row.shelf.name}"`,
+        userId,
+      },
+    });
+
+    return deleted;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -216,14 +488,23 @@ export class LocationService {
     };
   }
 
-  async createSlot(dto: CreateSlotDto) {
+  async createSlot(dto: CreateSlotDto, userId: string) {
     const row = await this.prisma.row.findUnique({ 
       where: { id: dto.rowId },
       include: { shelf: { include: { room: true } } }
     });
     if (!row) throw new NotFoundException(`Row ${dto.rowId} not found`);
     try {
-      return await this.prisma.slot.create({ data: dto });
+      const slot = await this.prisma.slot.create({ data: dto });
+      await this.prisma.movementLog.create({
+        data: {
+          action: LogAction.SLOT_CREATED,
+          toLocation: `${row.shelf.room.name} / ${row.shelf.name} / ${row.name} / ${slot.name}`,
+          notes: `Created slot "${slot.name}" in row "${row.name}" (shelf "${row.shelf.name}", room "${row.shelf.room.name}")`,
+          userId,
+        },
+      });
+      return slot;
     } catch (error: any) {
       if (error.code === 'P2002') {
         const target = error.meta?.target;
@@ -237,8 +518,79 @@ export class LocationService {
     }
   }
 
-  async deleteSlot(id: string) {
-    const slot = await this.prisma.slot.findUnique({ where: { id }, include: { boxes: true } });
+  async updateSlot(id: string, dto: UpdateSlotDto, userId: string) {
+    const slot = await this.prisma.slot.findUnique({ 
+      where: { id },
+      include: { row: { include: { shelf: { include: { room: true } } } } }
+    });
+    if (!slot) throw new NotFoundException(`Slot ${id} not found`);
+
+    let targetRow = slot.row;
+    if (dto.rowId && dto.rowId !== slot.rowId) {
+      const row = await this.prisma.row.findUnique({ where: { id: dto.rowId }, include: { shelf: { include: { room: true } } } });
+      if (!row) throw new NotFoundException(`Row ${dto.rowId} not found`);
+      targetRow = row;
+    }
+
+    try {
+      const updated = await this.prisma.slot.update({
+        where: { id },
+        data: dto,
+      });
+
+      const oldPath = `${slot.row.shelf.room.name} / ${slot.row.shelf.name} / ${slot.row.name} / ${slot.name}`;
+      const newPath = `${targetRow.shelf.room.name} / ${targetRow.shelf.name} / ${targetRow.name} / ${updated.name}`;
+
+      if (dto.name && dto.name !== slot.name) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.SLOT_UPDATED,
+            fromLocation: oldPath,
+            toLocation: newPath,
+            notes: `Renamed slot from "${slot.name}" to "${updated.name}" in row "${targetRow.name}"`,
+            userId,
+          },
+        });
+      } else if (dto.rowId && dto.rowId !== slot.rowId) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.SLOT_UPDATED,
+            fromLocation: oldPath,
+            toLocation: newPath,
+            notes: `Moved slot "${updated.name}" from row "${slot.row.name}" to "${targetRow.name}"`,
+            userId,
+          },
+        });
+      } else if (dto.qrCode && dto.qrCode !== slot.qrCode) {
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.SLOT_UPDATED,
+            fromLocation: oldPath,
+            toLocation: newPath,
+            notes: `Updated QR code for slot "${updated.name}"`,
+            userId,
+          },
+        });
+      }
+      return updated;
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const target = error.meta?.target;
+        if (target?.includes('qrCode')) {
+          throw new ConflictException(`QR code "${dto.qrCode}" is already in use by another slot`);
+        } else if (target?.includes('rowId') && target?.includes('name')) {
+          throw new ConflictException(`A slot named "${dto.name}" already exists in row "${targetRow.name}". Please choose a different name.`);
+        }
+      }
+      throw new BadRequestException('Failed to update slot');
+    }
+  }
+
+  async deleteSlot(id: string, userId: string) {
+    const slot = await this.prisma.slot.findUnique({ 
+      where: { id },
+      include: { row: { include: { shelf: { include: { room: true } } } }, boxes: true } 
+    });
     if (!slot) throw new NotFoundException(`Slot ${id} not found`);
     if (slot.boxes && slot.boxes.length > 0) {
       const labels = slot.boxes.map((b) => b.label).join(', ');
@@ -246,7 +598,19 @@ export class LocationService {
         `Slot "${slot.name}" still contains box(es): ${labels}. Move or remove them first.`,
       );
     }
-    return this.prisma.slot.delete({ where: { id } });
+    
+    const deleted = await this.prisma.slot.delete({ where: { id } });
+
+    await this.prisma.movementLog.create({
+      data: {
+        action: LogAction.SLOT_DELETED,
+        fromLocation: `${slot.row.shelf.room.name} / ${slot.row.shelf.name} / ${slot.row.name} / ${deleted.name}`,
+        notes: `Deleted slot "${deleted.name}" inside row "${slot.row.name}"`,
+        userId,
+      },
+    });
+
+    return deleted;
   }
 
 

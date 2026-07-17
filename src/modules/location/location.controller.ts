@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -18,6 +19,10 @@ import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateShelfDto } from './dto/create-shelf.dto';
 import { CreateRowDto } from './dto/create-row.dto';
 import { CreateSlotDto } from './dto/create-slot.dto';
+import { UpdateRoomDto } from './dto/update-room.dto';
+import { UpdateShelfDto } from './dto/update-shelf.dto';
+import { UpdateRowDto } from './dto/update-row.dto';
+import { UpdateSlotDto } from './dto/update-slot.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('location')
@@ -38,15 +43,26 @@ export class LocationController {
   /** POST /api/location/rooms — create a room (ADMIN only) */
   @Post('rooms')
   @Roles('ADMIN')
-  createRoom(@Body() dto: CreateRoomDto) {
-    return this.locationService.createRoom(dto);
+  createRoom(@Body() dto: CreateRoomDto, @CurrentUser() user: JwtPayload) {
+    return this.locationService.createRoom(dto, user.sub);
+  }
+
+  /** PATCH /api/location/rooms/:id — update a room (ADMIN only) */
+  @Patch('rooms/:id')
+  @Roles('ADMIN')
+  updateRoom(
+    @Param('id') id: string,
+    @Body() dto: UpdateRoomDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.locationService.updateRoom(id, dto, user.sub);
   }
 
   /** DELETE /api/location/rooms/:id — delete a room (ADMIN only) */
   @Delete('rooms/:id')
   @Roles('ADMIN')
-  deleteRoom(@Param('id') id: string) {
-    return this.locationService.deleteRoom(id);
+  deleteRoom(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.locationService.deleteRoom(id, user.sub);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -63,15 +79,26 @@ export class LocationController {
   /** POST /api/location/shelves — create a shelf */
   @Post('shelves')
   @Roles('ADMIN')
-  createShelf(@Body() dto: CreateShelfDto) {
-    return this.locationService.createShelf(dto);
+  createShelf(@Body() dto: CreateShelfDto, @CurrentUser() user: JwtPayload) {
+    return this.locationService.createShelf(dto, user.sub);
+  }
+
+  /** PATCH /api/location/shelves/:id */
+  @Patch('shelves/:id')
+  @Roles('ADMIN')
+  updateShelf(
+    @Param('id') id: string,
+    @Body() dto: UpdateShelfDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.locationService.updateShelf(id, dto, user.sub);
   }
 
   /** DELETE /api/location/shelves/:id */
   @Delete('shelves/:id')
   @Roles('ADMIN')
-  deleteShelf(@Param('id') id: string) {
-    return this.locationService.deleteShelf(id);
+  deleteShelf(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.locationService.deleteShelf(id, user.sub);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -88,15 +115,26 @@ export class LocationController {
   /** POST /api/location/rows — create a row */
   @Post('rows')
   @Roles('ADMIN')
-  createRow(@Body() dto: CreateRowDto) {
-    return this.locationService.createRow(dto);
+  createRow(@Body() dto: CreateRowDto, @CurrentUser() user: JwtPayload) {
+    return this.locationService.createRow(dto, user.sub);
+  }
+
+  /** PATCH /api/location/rows/:id */
+  @Patch('rows/:id')
+  @Roles('ADMIN')
+  updateRow(
+    @Param('id') id: string,
+    @Body() dto: UpdateRowDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.locationService.updateRow(id, dto, user.sub);
   }
 
   /** DELETE /api/location/rows/:id */
   @Delete('rows/:id')
   @Roles('ADMIN')
-  deleteRow(@Param('id') id: string) {
-    return this.locationService.deleteRow(id);
+  deleteRow(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.locationService.deleteRow(id, user.sub);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -130,15 +168,26 @@ export class LocationController {
   /** POST /api/location/slots — create a slot */
   @Post('slots')
   @Roles('ADMIN')
-  createSlot(@Body() dto: CreateSlotDto) {
-    return this.locationService.createSlot(dto);
+  createSlot(@Body() dto: CreateSlotDto, @CurrentUser() user: JwtPayload) {
+    return this.locationService.createSlot(dto, user.sub);
+  }
+
+  /** PATCH /api/location/slots/:id */
+  @Patch('slots/:id')
+  @Roles('ADMIN')
+  updateSlot(
+    @Param('id') id: string,
+    @Body() dto: UpdateSlotDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.locationService.updateSlot(id, dto, user.sub);
   }
 
   /** DELETE /api/location/slots/:id */
   @Delete('slots/:id')
   @Roles('ADMIN')
-  deleteSlot(@Param('id') id: string) {
-    return this.locationService.deleteSlot(id);
+  deleteSlot(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.locationService.deleteSlot(id, user.sub);
   }
 
   // ─────────────────────────────────────────────────────────────

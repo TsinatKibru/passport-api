@@ -181,6 +181,23 @@ enum LogAction {
   PASSPORT_RETURNED  // passport returned from owner into a box
   PASSPORT_ISSUED    // passport issued to owner (removed from box)
   BOX_MOVED          // box moved to a new row/shelf/room (cascades to all passports)
+
+  // Configuration Audit Actions
+  ROOM_CREATED
+  ROOM_UPDATED
+  ROOM_DELETED
+
+  SHELF_CREATED
+  SHELF_UPDATED
+  SHELF_DELETED
+
+  ROW_CREATED
+  ROW_UPDATED
+  ROW_DELETED
+
+  SLOT_CREATED
+  SLOT_UPDATED
+  SLOT_DELETED
 }
 
 // ---------------------------------------------------------------------------
