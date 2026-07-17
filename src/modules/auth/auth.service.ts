@@ -427,4 +427,59 @@ export class AuthService {
       message: 'Password changed successfully',
     };
   }
+
+  private resetOtps = new Map<string, { code: string; expiresAt: Date }>();
+
+  async forgotPassword(email: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User with this email not found');
+    }
+
+    // Generate 6-digit random code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes expiry
+
+    this.resetOtps.set(email, { code, expiresAt });
+    console.log(`[PASSWORD RESET OTP] Email: ${email} | Code: ${code} | Expires: ${expiresAt.toISOString()}`);
+
+    return {
+      message: 'Password reset OTP generated successfully.',
+      otp: code,
+    };
+  }
+
+  async resetPassword(dto: any) {
+    const record = this.resetOtps.get(dto.email);
+
+    if (!record) {
+      throw new BadRequestException('No password reset requested for this email');
+    }
+
+    if (new Date() > record.expiresAt) {
+      this.resetOtps.delete(dto.email);
+      throw new BadRequestException('OTP code has expired');
+    }
+
+    if (record.code !== dto.otp) {
+      throw new BadRequestException('Invalid OTP code');
+    }
+
+    this.resetOtps.delete(dto.email);
+
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(dto.newPassword, salt);
+
+    await this.prisma.user.update({
+      where: { email: dto.email },
+      data: { passwordHash },
+    });
+
+    return {
+      message: 'Password reset successfully',
+    };
+  }
 }

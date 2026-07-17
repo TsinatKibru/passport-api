@@ -117,4 +117,14 @@ export class AuthController {
   ) {
     return this.authService.changePassword(user.sub, dto);
   }
+
+  @Post('forgot-password')
+  forgotPassword(@Body('email') email: string) {
+    return this.authService.forgotPassword(email);
+  }
+
+  @Post('reset-password')
+  resetPassword(@Body() dto: any) {
+    return this.authService.resetPassword(dto);
+  }
 }
