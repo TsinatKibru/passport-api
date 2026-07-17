@@ -36,6 +36,7 @@ export class PassportController {
   @Get()
   @Roles('ADMIN', 'STAFF')
   findAll(
+    @CurrentUser() user: JwtPayload,
     @Query('status') status?: 'IN_BOX' | 'ISSUED',
     @Query('search') search?: string,
     @Query('page') page?: string,
@@ -46,6 +47,7 @@ export class PassportController {
       search,
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 10,
+      user.role,
     );
   }
 

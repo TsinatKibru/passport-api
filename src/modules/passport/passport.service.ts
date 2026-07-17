@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreatePassportDto } from './dto/create-passport.dto';
+import { redactName } from '../../common/utils/redact.util';
 
 @Injectable()
 export class PassportService {
@@ -30,7 +31,7 @@ export class PassportService {
     }
   }
 
-  async findAll(status?: 'IN_BOX' | 'ISSUED', search?: string, page = 1, limit = 10) {
+  async findAll(status?: 'IN_BOX' | 'ISSUED', search?: string, page = 1, limit = 10, role?: string) {
     const skip = (page - 1) * limit;
 
     const where: any = {};
@@ -74,7 +75,9 @@ export class PassportService {
       this.prisma.passport.count({ where }),
     ]);
 
-    // Map box location path denormalized
+    const isSearch = search && search.trim().length > 0;
+
+    // Map box location path denormalized and redact if STAFF is browsing without search
     const formattedData = data.map((passport) => {
       let location: string | null = null;
       if (passport.box?.slot) {
@@ -83,6 +86,7 @@ export class PassportService {
       }
       return {
         ...passport,
+        holderName: (role === 'STAFF' && !isSearch) ? redactName(passport.holderName) : passport.holderName,
         location,
       };
     });

@@ -4,6 +4,7 @@ import { CreateBoxDto } from './dto/create-box.dto';
 import { DEFAULT_BOX_CAPACITY } from '../../common/constants/box.constants';
 import { computeBoxStatus } from '../../common/utils/box-status.util';
 import { buildLocationPath } from '../../common/utils/location.util';
+import { redactName } from '../../common/utils/redact.util';
 
 @Injectable()
 export class BoxService {
@@ -115,7 +116,7 @@ export class BoxService {
     };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, role?: string) {
     const box = await this.prisma.movableBox.findUnique({
       where: { id },
       include: {
@@ -145,10 +146,17 @@ export class BoxService {
     });
 
     if (!box) throw new NotFoundException(`Box ${id} not found`);
-    return this.formatBox(box);
+    const formatted = this.formatBox(box);
+    if (role === 'STAFF' && formatted.passports) {
+      formatted.passports = formatted.passports.map((p: any) => ({
+        ...p,
+        holderName: redactName(p.holderName),
+      }));
+    }
+    return formatted;
   }
 
-  async findByQr(qrCode: string) {
+  async findByQr(qrCode: string, role?: string) {
     const box = await this.prisma.movableBox.findUnique({
       where: { qrCode },
       include: {
@@ -178,7 +186,14 @@ export class BoxService {
     });
 
     if (!box) throw new NotFoundException(`Box with QR ${qrCode} not found`);
-    return this.formatBox(box);
+    const formatted = this.formatBox(box);
+    if (role === 'STAFF' && formatted.passports) {
+      formatted.passports = formatted.passports.map((p: any) => ({
+        ...p,
+        holderName: redactName(p.holderName),
+      }));
+    }
+    return formatted;
   }
 
   async remove(id: string) {

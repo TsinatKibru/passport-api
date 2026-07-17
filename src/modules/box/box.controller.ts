@@ -76,14 +76,20 @@ export class BoxController {
   }
 
   @Get('qr/:qrCode')
-  findByQr(@Param('qrCode') qrCode: string) {
-    return this.boxService.findByQr(qrCode);
+  findByQr(
+    @Param('qrCode') qrCode: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.boxService.findByQr(qrCode, user.role);
   }
 
   @Get(':id')
   @Roles('ADMIN', 'STAFF')
-  findOne(@Param('id') id: string) {
-    return this.boxService.findOne(id);
+  findOne(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.boxService.findOne(id, user.role);
   }
 
   @Post(':id/move')
