@@ -499,15 +499,9 @@ export class AuthService {
     // Send the email (runs asynchronously, does not block client response)
     this.sendOtpEmail(email, code);
 
-    const response: any = {
+    return {
       message: 'Password reset OTP generated successfully.',
     };
-
-    if (process.env.NODE_ENV !== 'production') {
-      response.otp = code;
-    }
-
-    return response;
   }
 
   async resetPassword(dto: any) {
