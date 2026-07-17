@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
+import * as nodemailer from 'nodemailer';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { SetupAdminDto } from './dto/setup-admin.dto';
@@ -430,6 +431,55 @@ export class AuthService {
 
   private resetOtps = new Map<string, { code: string; expiresAt: Date }>();
 
+  private async sendOtpEmail(email: string, code: string) {
+    const host = process.env.SMTP_HOST;
+    const port = parseInt(process.env.SMTP_PORT ?? '587', 10);
+    const user = process.env.SMTP_USER;
+    const pass = process.env.SMTP_PASS;
+    const from = process.env.SMTP_FROM ?? 'noreply@passport-track.com';
+
+    // If SMTP credentials are not set up, fall back to console logging
+    if (!user || !pass) {
+      console.warn(
+        `[MAILER] SMTP credentials not fully configured (SMTP_USER/SMTP_PASS are empty). ` +
+        `Falling back to console-only OTP delivery.`,
+      );
+      return;
+    }
+
+    try {
+      const transporter = nodemailer.createTransport({
+        host,
+        port,
+        secure: port === 465,
+        auth: {
+          user,
+          pass,
+        },
+      });
+
+      await transporter.sendMail({
+        from: `"PSM Support" <${from}>`,
+        to: email,
+        subject: 'Password Recovery Verification Code',
+        text: `Your verification code is: ${code}. It will expire in 10 minutes.`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+            <h2 style="color: #1e3a8a; margin-top: 0;">Password Recovery OTP</h2>
+            <p>You requested a verification code to reset your password. Use the verification code below to complete the recovery process:</p>
+            <div style="background-color: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 6px; padding: 16px; text-align: center; margin: 24px 0;">
+              <span style="font-size: 32px; font-weight: 700; letter-spacing: 0.1em; color: #0f172a;">${code}</span>
+            </div>
+            <p style="color: #64748b; font-size: 13px;">This verification code is valid for 10 minutes. If you did not make this request, you can safely ignore this email.</p>
+          </div>
+        `,
+      });
+      console.log(`[MAILER] Successfully sent verification email to ${email}`);
+    } catch (error) {
+      console.error(`[MAILER] Failed to send verification email to ${email}:`, error);
+    }
+  }
+
   async forgotPassword(email: string) {
     const user = await this.prisma.user.findUnique({
       where: { email },
@@ -446,10 +496,18 @@ export class AuthService {
     this.resetOtps.set(email, { code, expiresAt });
     console.log(`[PASSWORD RESET OTP] Email: ${email} | Code: ${code} | Expires: ${expiresAt.toISOString()}`);
 
-    return {
+    // Send the email (runs asynchronously, does not block client response)
+    this.sendOtpEmail(email, code);
+
+    const response: any = {
       message: 'Password reset OTP generated successfully.',
-      otp: code,
     };
+
+    if (process.env.NODE_ENV !== 'production') {
+      response.otp = code;
+    }
+
+    return response;
   }
 
   async resetPassword(dto: any) {
