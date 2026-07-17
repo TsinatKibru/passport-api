@@ -448,13 +448,22 @@ export class AuthService {
     }
 
     try {
+      // Determine secure setting (boolean) from env variable or default port
+      const secure = process.env.SMTP_SECURE === 'true' || (process.env.SMTP_SECURE !== 'false' && port === 465);
+      
+      // Determine TLS rejectUnauthorized setting (default true, can be bypassed by setting "false")
+      const rejectUnauthorized = process.env.SMTP_REJECT_UNAUTHORIZED !== 'false';
+
       const transporter = nodemailer.createTransport({
         host,
         port,
-        secure: port === 465,
+        secure,
         auth: {
           user,
           pass,
+        },
+        tls: {
+          rejectUnauthorized,
         },
       });
 
