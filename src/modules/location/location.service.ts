@@ -1315,6 +1315,7 @@ export class LocationService {
     limit: number = 20,
     search?: string,
     roomId?: string,
+    excludeBoxId?: string,
   ) {
     const skip = (page - 1) * limit;
     const searchPattern = search ? `%${search}%` : null;
@@ -1343,6 +1344,7 @@ export class LocationService {
       WHERE b.status = 'ACTIVE'
         AND b."slotId" IS NOT NULL
         AND (b.capacity - b."occupiedCount") >= ${neededSpaces}
+        ${excludeBoxId ? Prisma.sql`AND b.id != ${excludeBoxId}` : Prisma.empty}
         ${searchPattern ? Prisma.sql`AND (b.label ILIKE ${searchPattern} OR b."qrCode" ILIKE ${searchPattern})` : Prisma.empty}
         ${roomId ? Prisma.sql`AND ro.id = ${roomId}` : Prisma.empty}
       ORDER BY (b.capacity - b."occupiedCount") DESC, b."occupiedCount" ASC
@@ -1359,6 +1361,7 @@ export class LocationService {
       WHERE b.status = 'ACTIVE'
         AND b."slotId" IS NOT NULL
         AND (b.capacity - b."occupiedCount") >= ${neededSpaces}
+        ${excludeBoxId ? Prisma.sql`AND b.id != ${excludeBoxId}` : Prisma.empty}
         ${searchPattern ? Prisma.sql`AND (b.label ILIKE ${searchPattern} OR b."qrCode" ILIKE ${searchPattern})` : Prisma.empty}
         ${roomId ? Prisma.sql`AND ro.id = ${roomId}` : Prisma.empty}
     `;

@@ -68,11 +68,12 @@ export class BoxController {
     @Query('limit') limit?: string,
     @Query('search') search?: string,
     @Query('roomId') roomId?: string,
+    @Query('excludeBoxId') excludeBoxId?: string,
   ) {
     const spaces = neededSpaces ? parseInt(neededSpaces, 10) : 1;
     const pageNum = page ? parseInt(page, 10) : 1;
     const limitNum = limit ? parseInt(limit, 10) : 20;
-    return this.locationService.getAvailableBoxes(spaces, pageNum, limitNum, search, roomId);
+    return this.locationService.getAvailableBoxes(spaces, pageNum, limitNum, search, roomId, excludeBoxId);
   }
 
   @Get('qr/:qrCode')
