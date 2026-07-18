@@ -417,11 +417,14 @@ export class LocationService {
   // SLOTS
   // ─────────────────────────────────────────────────────────────
 
-  async getSlots(rowId?: string, page?: number, limit?: number, search?: string) {
+  async getSlots(rowId?: string, page?: number, limit?: number, search?: string, vacantOnly?: boolean) {
     // If rowId is provided, use hierarchical loading (no pagination)
     if (rowId) {
       return this.prisma.slot.findMany({
-        where: { rowId },
+        where: { 
+          rowId,
+          ...(vacantOnly && { boxes: { none: {} } }),
+        },
         orderBy: { position: 'asc' },
         include: {
           row: {
@@ -441,22 +444,26 @@ export class LocationService {
     const limitNum = limit || 15;
     const skip = (pageNum - 1) * limitNum;
 
-    // Build search filter
-    const searchFilter = search
-      ? {
-          OR: [
-            { name: { contains: search, mode: 'insensitive' as const } },
-            { qrCode: { contains: search, mode: 'insensitive' as const } },
-            { row: { name: { contains: search, mode: 'insensitive' as const } } },
-            { row: { shelf: { name: { contains: search, mode: 'insensitive' as const } } } },
-            { row: { shelf: { room: { name: { contains: search, mode: 'insensitive' as const } } } } },
-          ],
-        }
-      : {};
+    // Build search and vacancy filters
+    const where: any = {};
+    
+    if (vacantOnly) {
+      where.boxes = { none: {} };
+    }
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' as const } },
+        { qrCode: { contains: search, mode: 'insensitive' as const } },
+        { row: { name: { contains: search, mode: 'insensitive' as const } } },
+        { row: { shelf: { name: { contains: search, mode: 'insensitive' as const } } } },
+        { row: { shelf: { room: { name: { contains: search, mode: 'insensitive' as const } } } } },
+      ];
+    }
 
     const [data, total] = await Promise.all([
       this.prisma.slot.findMany({
-        where: searchFilter,
+        where,
         orderBy: [
           { row: { shelf: { room: { name: 'asc' } } } },
           { row: { shelf: { name: 'asc' } } },
@@ -476,7 +483,7 @@ export class LocationService {
           boxes: { select: { id: true, qrCode: true, label: true, occupiedCount: true, capacity: true, status: true } },
         },
       }),
-      this.prisma.slot.count({ where: searchFilter }),
+      this.prisma.slot.count({ where }),
     ]);
 
     return {

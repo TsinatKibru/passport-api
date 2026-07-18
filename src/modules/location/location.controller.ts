@@ -141,7 +141,7 @@ export class LocationController {
   // SLOTS
   // ─────────────────────────────────────────────────────────────
 
-  /** GET /api/location/slots?rowId=&page=&limit=&search= — list slots with pagination and search */
+  /** GET /api/location/slots?rowId=&page=&limit=&search=&vacantOnly= — list slots with pagination, search, and vacancy filter */
   @Get('slots')
   @Roles('ADMIN', 'STAFF')
   getSlots(
@@ -149,12 +149,14 @@ export class LocationController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('search') search?: string,
+    @Query('vacantOnly') vacantOnly?: string,
   ) {
     return this.locationService.getSlots(
       rowId,
       page ? parseInt(page, 10) : undefined,
       limit ? parseInt(limit, 10) : undefined,
       search,
+      vacantOnly === 'true',
     );
   }
 
