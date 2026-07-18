@@ -33,6 +33,7 @@ export class DashboardService {
       inactiveBoxes,
       totalRooms,
       capacityData,
+      occupiedBoxes,
     ] = await Promise.all([
       // Passport metrics
       this.prisma.passport.count(),
@@ -55,6 +56,9 @@ export class DashboardService {
           occupiedCount: true,
         },
       }),
+
+      // Occupied boxes (boxes that contain at least one passport)
+      this.prisma.movableBox.count({ where: { occupiedCount: { gt: 0 } } }),
     ]);
 
     // Calculate occupancy metrics
@@ -63,9 +67,6 @@ export class DashboardService {
     const occupancyRate = totalCapacity > 0 
       ? parseFloat(((totalOccupied / totalCapacity) * 100).toFixed(1))
       : 0;
-
-    // Occupied boxes = boxes with at least one passport (ACTIVE + FULL)
-    const occupiedBoxes = activeBoxes + fullBoxes;
 
     return {
       // Passport metrics
