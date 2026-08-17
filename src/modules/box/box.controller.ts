@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -16,6 +17,7 @@ import type { JwtPayload } from '../../common/decorators/current-user.decorator'
 import { BoxService } from './box.service';
 import { LocationService } from '../location/location.service';
 import { CreateBoxDto } from './dto/create-box.dto';
+import { UpdateBoxDto } from './dto/update-box.dto';
 import { MoveBoxDto } from './dto/move-box.dto';
 
 @Controller('boxes')
@@ -100,6 +102,15 @@ export class BoxController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.locationService.moveBox(id, dto.slotId, user.sub);
+  }
+
+  @Patch(':id')
+  @Roles('ADMIN')
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateBoxDto,
+  ) {
+    return this.boxService.update(id, dto);
   }
 
   @Delete(':id')

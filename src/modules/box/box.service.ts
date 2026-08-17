@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateBoxDto } from './dto/create-box.dto';
+import { UpdateBoxDto } from './dto/update-box.dto';
 import { DEFAULT_BOX_CAPACITY } from '../../common/constants/box.constants';
 import { computeBoxStatus } from '../../common/utils/box-status.util';
 import { buildLocationPath } from '../../common/utils/location.util';
@@ -194,6 +195,75 @@ export class BoxService {
       }));
     }
     return formatted;
+  }
+
+  async update(id: string, dto: UpdateBoxDto) {
+    const box = await this.prisma.movableBox.findUnique({
+      where: { id },
+      include: {
+        slot: {
+          include: {
+            row: {
+              include: {
+                shelf: {
+                  include: {
+                    room: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!box) throw new NotFoundException(`Box ${id} not found`);
+
+    if (dto.capacity !== undefined && dto.capacity < box.occupiedCount) {
+      throw new BadRequestException(
+        `Capacity (${dto.capacity}) cannot be less than current occupied count (${box.occupiedCount})`,
+      );
+    }
+
+    const newCapacity = dto.capacity !== undefined ? dto.capacity : box.capacity;
+    const newStatus = computeBoxStatus(box.slotId, box.occupiedCount, newCapacity);
+
+    try {
+      const updated = await this.prisma.movableBox.update({
+        where: { id },
+        data: {
+          ...(dto.qrCode !== undefined && { qrCode: dto.qrCode }),
+          ...(dto.label !== undefined && { label: dto.label }),
+          ...(dto.capacity !== undefined && { capacity: dto.capacity }),
+          status: newStatus,
+        },
+        include: {
+          slot: {
+            include: {
+              row: {
+                include: {
+                  shelf: {
+                    include: {
+                      room: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+      return this.formatBox(updated);
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const field = error.meta?.target?.[0];
+        if (field === 'qrCode') {
+          throw new BadRequestException(`Box with QR code "${dto.qrCode}" already exists`);
+        } else if (field === 'label') {
+          throw new BadRequestException(`Box with label "${dto.label}" already exists`);
+        }
+      }
+      throw error;
+    }
   }
 
   async remove(id: string) {

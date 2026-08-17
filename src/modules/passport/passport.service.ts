@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreatePassportDto } from './dto/create-passport.dto';
+import { UpdatePassportDto } from './dto/update-passport.dto';
 import { redactName } from '../../common/utils/redact.util';
 
 @Injectable()
@@ -174,6 +175,32 @@ export class PassportService {
       ...passport,
       location,
     };
+  }
+
+  async update(id: string, dto: UpdatePassportDto) {
+    const passport = await this.prisma.passport.findUnique({ where: { id } });
+    if (!passport) throw new NotFoundException(`Passport ${id} not found`);
+
+    try {
+      return await this.prisma.passport.update({
+        where: { id },
+        data: {
+          ...(dto.qrCode !== undefined && { qrCode: dto.qrCode }),
+          ...(dto.holderName !== undefined && { holderName: dto.holderName }),
+          ...(dto.holderIdNo !== undefined && { holderIdNo: dto.holderIdNo }),
+        },
+      });
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        const field = error.meta?.target?.[0];
+        if (field === 'qrCode') {
+          throw new BadRequestException(`Passport with QR code "${dto.qrCode}" already exists`);
+        } else if (field === 'holderIdNo') {
+          throw new BadRequestException(`Passport with ID number "${dto.holderIdNo}" already exists`);
+        }
+      }
+      throw error;
+    }
   }
 
   async remove(id: string) {

@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -16,6 +17,7 @@ import type { JwtPayload } from '../../common/decorators/current-user.decorator'
 import { PassportService } from './passport.service';
 import { LocationService } from '../location/location.service';
 import { CreatePassportDto } from './dto/create-passport.dto';
+import { UpdatePassportDto } from './dto/update-passport.dto';
 import { AssignPassportDto } from './dto/assign-passport.dto';
 import { BatchAssignPassportDto } from './dto/batch-assign-passport.dto';
 
@@ -106,6 +108,15 @@ export class PassportController {
   @Post(':id/issue')
   issue(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     return this.locationService.issuePassport(id, user.sub);
+  }
+
+  @Patch(':id')
+  @Roles('ADMIN')
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdatePassportDto,
+  ) {
+    return this.passportService.update(id, dto);
   }
 
   @Delete(':id')
