@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { LogAction } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreatePassportDto } from './dto/create-passport.dto';
 import { UpdatePassportDto } from './dto/update-passport.dto';
@@ -177,12 +178,33 @@ export class PassportService {
     };
   }
 
-  async update(id: string, dto: UpdatePassportDto) {
-    const passport = await this.prisma.passport.findUnique({ where: { id } });
+  async update(id: string, dto: UpdatePassportDto, userId?: string) {
+    const passport = await this.prisma.passport.findUnique({
+      where: { id },
+      include: {
+        box: {
+          include: {
+            slot: {
+              include: {
+                row: {
+                  include: {
+                    shelf: {
+                      include: {
+                        room: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
     if (!passport) throw new NotFoundException(`Passport ${id} not found`);
 
     try {
-      return await this.prisma.passport.update({
+      const updated = await this.prisma.passport.update({
         where: { id },
         data: {
           ...(dto.qrCode !== undefined && { qrCode: dto.qrCode }),
@@ -190,6 +212,39 @@ export class PassportService {
           ...(dto.holderIdNo !== undefined && { holderIdNo: dto.holderIdNo }),
         },
       });
+
+      // Track changes for audit log
+      const changes: string[] = [];
+      if (dto.holderName && dto.holderName !== passport.holderName) {
+        changes.push(`holderName from "${passport.holderName}" to "${dto.holderName}"`);
+      }
+      if (dto.holderIdNo && dto.holderIdNo !== passport.holderIdNo) {
+        changes.push(`holderIdNo from "${passport.holderIdNo}" to "${dto.holderIdNo}"`);
+      }
+      if (dto.qrCode && dto.qrCode !== passport.qrCode) {
+        changes.push(`qrCode from "${passport.qrCode}" to "${dto.qrCode}"`);
+      }
+
+      if (changes.length > 0 && userId) {
+        let locationPath: string | null = null;
+        if (passport.box?.slot) {
+          const slot = passport.box.slot;
+          locationPath = `${slot.row.shelf.room.name} / ${slot.row.shelf.name} / ${slot.row.name} / ${slot.name}`;
+        }
+
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.PASSPORT_UPDATED,
+            fromLocation: locationPath,
+            toLocation: locationPath,
+            notes: `Updated passport (${passport.holderName}): ${changes.join(', ')}`,
+            passportId: passport.id,
+            userId,
+          },
+        });
+      }
+
+      return updated;
     } catch (error: any) {
       if (error.code === 'P2002') {
         const field = error.meta?.target?.[0];

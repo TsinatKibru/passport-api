@@ -109,8 +109,9 @@ export class BoxController {
   update(
     @Param('id') id: string,
     @Body() dto: UpdateBoxDto,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.boxService.update(id, dto);
+    return this.boxService.update(id, dto, user.sub);
   }
 
   @Delete(':id')

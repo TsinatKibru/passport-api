@@ -180,7 +180,9 @@ enum LogAction {
   PASSPORT_ASSIGNED  // passport placed into a box
   PASSPORT_RETURNED  // passport returned from owner into a box
   PASSPORT_ISSUED    // passport issued to owner (removed from box)
+  PASSPORT_UPDATED   // passport details updated by admin
   BOX_MOVED          // box moved to a new row/shelf/room (cascades to all passports)
+  BOX_UPDATED        // box details updated by admin
 
   // Configuration Audit Actions
   ROOM_CREATED

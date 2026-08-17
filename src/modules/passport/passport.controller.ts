@@ -115,8 +115,9 @@ export class PassportController {
   update(
     @Param('id') id: string,
     @Body() dto: UpdatePassportDto,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.passportService.update(id, dto);
+    return this.passportService.update(id, dto, user.sub);
   }
 
   @Delete(':id')

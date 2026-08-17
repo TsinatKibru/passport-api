@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { LogAction } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateBoxDto } from './dto/create-box.dto';
 import { UpdateBoxDto } from './dto/update-box.dto';
@@ -197,7 +198,7 @@ export class BoxService {
     return formatted;
   }
 
-  async update(id: string, dto: UpdateBoxDto) {
+  async update(id: string, dto: UpdateBoxDto, userId?: string) {
     const box = await this.prisma.movableBox.findUnique({
       where: { id },
       include: {
@@ -252,6 +253,33 @@ export class BoxService {
           },
         },
       });
+
+      // Track changes for audit log
+      const changes: string[] = [];
+      if (dto.label && dto.label !== box.label) {
+        changes.push(`label from "${box.label}" to "${dto.label}"`);
+      }
+      if (dto.qrCode && dto.qrCode !== box.qrCode) {
+        changes.push(`qrCode from "${box.qrCode}" to "${dto.qrCode}"`);
+      }
+      if (dto.capacity !== undefined && dto.capacity !== box.capacity) {
+        changes.push(`capacity from ${box.capacity} to ${dto.capacity}`);
+      }
+
+      if (changes.length > 0 && userId) {
+        const locationPath = buildLocationPath(box.slot);
+        await this.prisma.movementLog.create({
+          data: {
+            action: LogAction.BOX_UPDATED,
+            fromLocation: locationPath,
+            toLocation: locationPath,
+            notes: `Updated box (${box.label}): ${changes.join(', ')}`,
+            boxId: box.id,
+            userId,
+          },
+        });
+      }
+
       return this.formatBox(updated);
     } catch (error: any) {
       if (error.code === 'P2002') {
